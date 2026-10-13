@@ -409,6 +409,98 @@ func TestResponsesEchoesSearchCallsOnNextTurn(t *testing.T) {
 	}
 }
 
+func TestResponsesRecoversReasoningFromCompletedPayload(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"id\":\"r1\",\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"content\":[{\"type\":\"reasoning_text\",\"text\":\"thought only in final frame\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"答案是42\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+	}))
+	defer srv.Close()
+
+	_ = os.Setenv("DEEPSEEK_API_KEY", "test-key")
+	c, err := New(
+		WithBaseURL(srv.URL),
+		WithHTTPClient(srv.Client()),
+		WithModel("deepseek-v4-flash"),
+		WithWebSearchMode(WebSearchModeServer),
+	)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	var complete *llm.ProviderResponse
+	for ev := range c.StreamResponse(context.Background(),
+		[]core.Message{{SessionID: "recover", Role: core.RoleUser, Text: "搜一下"}},
+		[]core.Tool{fakeTool{"web_search"}},
+	) {
+		if ev.Type == llm.EventError {
+			t.Fatalf("turn error: %v", ev.Err)
+		}
+		if ev.Type == llm.EventComplete {
+			complete = ev.Response
+		}
+	}
+	if complete == nil {
+		t.Fatal("missing complete event")
+	}
+	if complete.Reasoning != "thought only in final frame" {
+		t.Fatalf("reasoning = %q, want text recovered from completed payload", complete.Reasoning)
+	}
+}
+
+func TestResponsesSearchReplayReasoningOrder(t *testing.T) {
+	const answer = "答案是42"
+	searchHistory := func(reasoning string) []core.Message {
+		return []core.Message{
+			{SessionID: "t", Role: core.RoleUser, Text: "查"},
+			{SessionID: "t", Role: core.RoleAssistant, Text: answer, Reasoning: reasoning},
+			{SessionID: "t", Role: core.RoleUser, Text: "然后呢"},
+		}
+	}
+	searchReplays := func(reasoning string) []webSearchCallReplay {
+		return []webSearchCallReplay{{
+			assistantKey: responsesAssistantReplayKey(answer, reasoning, nil),
+			items:        []map[string]any{{"type": "web_search_call", "id": "ws_t"}},
+		}}
+	}
+	cases := []struct {
+		name      string
+		history   []core.Message
+		replays   []webSearchCallReplay
+		wantTypes []string
+	}{
+		{
+			name:      "plain text turn gets no reasoning item",
+			history:   []core.Message{{SessionID: "t", Role: core.RoleUser, Text: "hi"}, {SessionID: "t", Role: core.RoleAssistant, Text: "你好"}, {SessionID: "t", Role: core.RoleUser, Text: "next"}},
+			wantTypes: []string{"message", "message", "message"},
+		},
+		{
+			name:      "server search turn replays reasoning before the search call",
+			history:   searchHistory("先搜索。"),
+			replays:   searchReplays("先搜索。"),
+			wantTypes: []string{"message", "reasoning", "web_search_call", "message", "message"},
+		},
+		{
+			name:      "server search turn without reasoning replays the search call alone",
+			history:   searchHistory(""),
+			replays:   searchReplays(""),
+			wantTypes: []string{"message", "web_search_call", "message", "message"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			items := toResponsesInputItems(tc.history, tc.replays)
+			types := make([]string, 0, len(items))
+			for _, item := range items {
+				typ, _ := item["type"].(string)
+				types = append(types, typ)
+			}
+			if strings.Join(types, ",") != strings.Join(tc.wantTypes, ",") {
+				t.Fatalf("types = %v, want %v", types, tc.wantTypes)
+			}
+		})
+	}
+}
+
 func TestResponsesModeRouting(t *testing.T) {
 	var paths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -694,6 +786,90 @@ func TestResponsesHistoryKeepsToolCallReasoning(t *testing.T) {
 	}
 }
 
+func TestResponsesToolCallTurnReplaysReasoningBeforeText(t *testing.T) {
+	history := []core.Message{
+		{SessionID: "order", Role: core.RoleUser, Text: "当前项目如何编写插件"},
+		{SessionID: "order", Role: core.RoleAssistant, Text: "我先看一下目录结构。", Reasoning: "用户想了解插件机制，先列出目录。", ToolCalls: []core.ToolCall{{ID: "call_1", Name: "list_dir", Input: `{"path":""}`}}},
+		{SessionID: "order", Role: core.RoleTool, ToolResults: []core.ToolResult{{ToolCallID: "call_1", Name: "list_dir", ModelText: "src"}}},
+	}
+	items := toResponsesInputItems(history, nil)
+	wantTypes := []string{"message", "reasoning", "message", "function_call", "function_call_output"}
+	types := make([]string, 0, len(items))
+	for _, item := range items {
+		typ, _ := item["type"].(string)
+		types = append(types, typ)
+	}
+	if strings.Join(types, ",") != strings.Join(wantTypes, ",") {
+		t.Fatalf("types = %v, want %v", types, wantTypes)
+	}
+}
+
+func TestResponsesReasoningEffortNoneWhenCurrentTurnStepLacksReasoning(t *testing.T) {
+	var gotEffort string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		reasoning, _ := payload["reasoning"].(map[string]any)
+		gotEffort, _ = reasoning["effort"].(string)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"id\":\"r\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"好\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+	}))
+	defer srv.Close()
+
+	_ = os.Setenv("DEEPSEEK_API_KEY", "test-key")
+	c, err := New(
+		WithBaseURL(srv.URL),
+		WithHTTPClient(srv.Client()),
+		WithModel("deepseek-v4-flash"),
+		WithWebSearchMode(WebSearchModeServer),
+	)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	currentWithReasoning := []core.Message{
+		{SessionID: "fx", Role: core.RoleUser, Text: "看目录"},
+		{SessionID: "fx", Role: core.RoleAssistant, Reasoning: "列目录", ToolCalls: []core.ToolCall{{ID: "c1", Name: "list_dir", Input: `{}`}}},
+		{SessionID: "fx", Role: core.RoleTool, ToolResults: []core.ToolResult{{ToolCallID: "c1", Name: "list_dir", ModelText: "ok"}}},
+	}
+	currentWithoutReasoning := []core.Message{
+		{SessionID: "fx", Role: core.RoleUser, Text: "看目录"},
+		{SessionID: "fx", Role: core.RoleAssistant, ToolCalls: []core.ToolCall{{ID: "c1", Name: "list_dir", Input: `{}`}}},
+		{SessionID: "fx", Role: core.RoleTool, ToolResults: []core.ToolResult{{ToolCallID: "c1", Name: "list_dir", ModelText: "ok"}}},
+	}
+	previousWithoutReasoning := []core.Message{
+		{SessionID: "fx", Role: core.RoleUser, Text: "第一问"},
+		{SessionID: "fx", Role: core.RoleAssistant, ToolCalls: []core.ToolCall{{ID: "p1", Name: "list_dir", Input: `{}`}}},
+		{SessionID: "fx", Role: core.RoleTool, ToolResults: []core.ToolResult{{ToolCallID: "p1", Name: "list_dir", ModelText: "ok"}}},
+		{SessionID: "fx", Role: core.RoleAssistant, Text: "第一答"},
+		{SessionID: "fx", Role: core.RoleUser, Text: "第二问"},
+	}
+	cases := []struct {
+		name       string
+		history    []core.Message
+		wantEffort string
+	}{
+		{name: "current turn tool step has reasoning", history: currentWithReasoning, wantEffort: "high"},
+		{name: "current turn tool step lacks reasoning", history: currentWithoutReasoning, wantEffort: "none"},
+		{name: "previous turn tool step lacks reasoning", history: append(append([]core.Message{}, previousWithoutReasoning...), currentWithReasoning[1:]...), wantEffort: "high"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotEffort = ""
+			for ev := range c.StreamResponse(context.Background(), tc.history, []core.Tool{fakeTool{"web_search"}}) {
+				if ev.Type == llm.EventError {
+					t.Fatalf("turn error: %v", ev.Err)
+				}
+			}
+			if gotEffort != tc.wantEffort {
+				t.Fatalf("reasoning effort = %q, want %q", gotEffort, tc.wantEffort)
+			}
+		})
+	}
+}
+
 func TestResponsesInputItemsRestoresSearchCallsToOriginatingAssistant(t *testing.T) {
 	assistant := core.Message{
 		SessionID: "h2",
@@ -714,9 +890,14 @@ func TestResponsesInputItemsRestoresSearchCallsToOriginatingAssistant(t *testing
 	if len(items) != 5 {
 		t.Fatalf("items = %d, want 5: %#v", len(items), items)
 	}
-	search := items[len(items)-2]
-	if search["type"] != "web_search_call" || search["id"] != "ws_1" {
-		t.Fatalf("penultimate item = %#v, want echoed web_search_call", search)
+	var search map[string]any
+	for _, item := range items {
+		if item["type"] == "web_search_call" {
+			search = item
+		}
+	}
+	if search == nil || search["id"] != "ws_1" {
+		t.Fatalf("input does not echo web_search_call: %#v", items)
 	}
 	last := items[len(items)-1]
 	if last["role"] != "user" {
@@ -747,7 +928,7 @@ func TestResponsesInputItemsKeepsSearchAndFunctionCallsInReasoningGroup(t *testi
 	}}
 
 	items := toResponsesInputItems(history, replays)
-	wantTypes := []string{"message", "message", "reasoning", "web_search_call", "function_call", "function_call_output"}
+	wantTypes := []string{"message", "reasoning", "web_search_call", "message", "function_call", "function_call_output"}
 	if len(items) != len(wantTypes) {
 		t.Fatalf("items = %d, want %d: %#v", len(items), len(wantTypes), items)
 	}

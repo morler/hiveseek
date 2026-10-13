@@ -205,13 +205,19 @@ func sessionIDForHistory(history []core.Message) string {
 // local search call and the agent loop never dispatches one.
 func (c *Client) streamResponses(ctx context.Context, history []core.Message, tools []core.Tool, out chan<- llm.ProviderEvent) error {
 	sessionID := sessionIDForHistory(history)
+	effort := c.responsesReasoningEffort()
+	if effort != "none" && responsesCurrentTurnMissingReasoning(history) {
+		// Thinking mode rejects a tool loop whose current turn has a step without
+		// reasoning_text (400); run this request without thinking instead.
+		effort = "none"
+	}
 	payload := map[string]any{
 		"model":  c.model,
 		"input":  toResponsesInputItems(history, c.searchCalls.lookup(sessionID)),
 		"stream": true,
 		"store":  false,
 		"reasoning": map[string]any{
-			"effort": c.responsesReasoningEffort(),
+			"effort": effort,
 		},
 	}
 	if len(tools) > 0 {
@@ -357,13 +363,9 @@ func toResponsesInputItems(history []core.Message, searchReplays []webSearchCall
 				continue
 			}
 			flushMissing()
-			if text := strings.TrimSpace(core.MessagePlainText(msg)); text != "" {
-				out = append(out, map[string]any{
-					"type":    "message",
-					"role":    "assistant",
-					"content": []map[string]any{{"type": "output_text", "text": text}},
-				})
-			}
+			// Replay the turn in the order the server emitted it: reasoning, search
+			// calls, visible text, then function calls. Thinking mode rejects a text
+			// message placed before the reasoning_text item (400).
 			if (len(msg.ToolCalls) > 0 || len(searchCalls) > 0) && strings.TrimSpace(msg.Reasoning) != "" {
 				out = append(out, map[string]any{
 					"type":    "reasoning",
@@ -371,6 +373,13 @@ func toResponsesInputItems(history []core.Message, searchReplays []webSearchCall
 				})
 			}
 			out = append(out, searchCalls...)
+			if text := strings.TrimSpace(core.MessagePlainText(msg)); text != "" {
+				out = append(out, map[string]any{
+					"type":    "message",
+					"role":    "assistant",
+					"content": []map[string]any{{"type": "output_text", "text": text}},
+				})
+			}
 			for _, tc := range msg.ToolCalls {
 				id := strings.TrimSpace(tc.ID)
 				if id == "" {
@@ -407,6 +416,24 @@ func toResponsesInputItems(history []core.Message, searchReplays []webSearchCall
 	}
 	flushMissing()
 	return out
+}
+
+// responsesCurrentTurnMissingReasoning reports whether a tool-call step in the
+// current user turn (after the latest user message) has no reasoning. Thinking
+// mode rejects such a turn with 400, so the request must run without thinking.
+func responsesCurrentTurnMissingReasoning(history []core.Message) bool {
+	start := 0
+	for i, msg := range history {
+		if msg.Role == core.RoleUser {
+			start = i
+		}
+	}
+	for _, msg := range history[start:] {
+		if msg.Role == core.RoleAssistant && len(msg.ToolCalls) > 0 && strings.TrimSpace(msg.Reasoning) == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func responsesAssistantReplayKey(content, reasoning string, calls []core.ToolCall) string {
@@ -711,6 +738,10 @@ func parseResponsesData(data, model, sessionID string, acc *responsesAccumulator
 			acc.content.Reset()
 			acc.content.WriteString(content)
 		}
+		if reasoning := responsesReasoningText(resp.Output); reasoning != "" {
+			acc.reasoning.Reset()
+			acc.reasoning.WriteString(reasoning)
+		}
 		if len(calls) > 0 {
 			acc.callsByIndex = map[int]*responsesCallState{}
 			for i, call := range calls {
@@ -809,6 +840,35 @@ func responsesOutputText(output []map[string]any) string {
 				continue
 			}
 			if part["type"] == "output_text" {
+				if s, ok := part["text"].(string); ok {
+					b.WriteString(s)
+				}
+			}
+		}
+	}
+	return b.String()
+}
+
+// responsesReasoningText extracts reasoning_text parts from reasoning items in a
+// completed response's output. Reasoning deltas can be absent, so the final
+// payload is the fallback source.
+func responsesReasoningText(output []map[string]any) string {
+	var b strings.Builder
+	for _, item := range output {
+		typ, _ := item["type"].(string)
+		if typ != "reasoning" {
+			continue
+		}
+		content, ok := item["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, raw := range content {
+			part, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if part["type"] == "reasoning_text" {
 				if s, ok := part["text"].(string); ok {
 					b.WriteString(s)
 				}
