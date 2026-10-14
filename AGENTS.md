@@ -35,7 +35,7 @@ Tests use Go's `testing` package. Name tests `TestXxx` and keep them adjacent to
 
 ## Commit & Pull Request Guidelines
 
-Recent history mixes short imperative subjects with scoped prefixes such as `feat(tui): ...`, `agent: ...`, and `chore: ...`. Keep commits small and behavior-focused. PRs should state what changed, why it changed, and what you tested; include terminal output or screenshots when CLI/TUI behavior changes. Open an issue before broad command-surface, session-format, or provider-scope changes.
+Recent history mixes short imperative subjects with scoped prefixes such as `feat(tui): ...`, `agent: ...`, and `chore: ...`. Keep commits small and behavior-focused. PRs should state what changed, why it changed, and what you tested; include terminal output or screenshots when CLI/TUI behavior changes. Open an issue before broad command-surface, session-format, or provider-scope changes. For these changes, a design document checked into `docs/` may be used instead of an issue, provided it records the decision, its status (draft or confirmed), and the baseline commit.
 
 ## Security & Configuration Tips
 
