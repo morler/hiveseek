@@ -212,10 +212,6 @@ func renderToolEventHeader(m UIMessage, header string, width int) []string {
 }
 
 func renderToolEventHeaderWithStatus(m UIMessage, header, status string, width int) []string {
-	contentWidth := width - 2
-	if contentWidth < 16 {
-		contentWidth = 16
-	}
 	bullet := toolEventBulletStyle(m).Render("•")
 	verb, rest := splitEventHeader(header)
 	verbStyle := lipgloss.NewStyle().Bold(true).Foreground(toolEventVerbColor(m))
