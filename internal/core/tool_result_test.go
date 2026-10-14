@@ -27,9 +27,6 @@ func TestNewToolResultFromEnvelopeRendersPlainText(t *testing.T) {
 	if strings.Contains(res.ModelText, `"success"`) || strings.Contains(res.ModelText, `\u0026`) {
 		t.Fatalf("model text must not contain envelope scaffolding or escapes:\n%s", res.ModelText)
 	}
-	if res.ModelText != res.ModelText {
-		t.Fatalf("Content mirrors ModelText, got %s", res.ModelText)
-	}
 	if res.Outcome != OutcomeFailure || res.Code != "exec_failed" || !res.IsError() {
 		t.Fatalf("unexpected classification: %+v", res)
 	}
@@ -98,8 +95,8 @@ func TestFinalizeToolResultChannels(t *testing.T) {
 	if denied.Outcome != OutcomeBlocked || denied.Code != "approval_denied" {
 		t.Fatalf("approval denied misclassified: %+v", denied)
 	}
-	if denied.ModelText != denied.ModelText {
-		t.Fatal("ModelText must take Content bytes verbatim")
+	if denied.ModelText == "" || strings.Contains(denied.ModelText, `"success"`) {
+		t.Fatalf("approval denial must render plain model text, got %q", denied.ModelText)
 	}
 
 	skipped := FinalizeToolResultChannels(ToolResult{
@@ -134,8 +131,8 @@ func TestDispatchPopulatesChannelSeparatedFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
-	if res.ModelText != res.ModelText {
-		t.Fatalf("ModelText must mirror Content in phase 1:\nModelText: %s\nContent:   %s", res.ModelText, res.ModelText)
+	if res.ModelText == "" {
+		t.Fatal("dispatch must populate ModelText")
 	}
 	if res.Outcome != OutcomeSuccess || res.Code != "ok" {
 		t.Fatalf("unexpected classification: outcome=%s code=%s", res.Outcome, res.Code)
@@ -157,8 +154,8 @@ func TestDispatchPopulatesChannelSeparatedFields(t *testing.T) {
 	if res.Outcome != OutcomeFailure || res.Code != "not_found" || !res.IsError() {
 		t.Fatalf("unexpected not-found classification: outcome=%s code=%s isError=%v", res.Outcome, res.Code, res.IsError())
 	}
-	if res.ModelText == "" || res.ModelText != res.ModelText {
-		t.Fatalf("not-found result must carry mirrored ModelText, got %q", res.ModelText)
+	if res.ModelText == "" {
+		t.Fatal("not-found result must carry ModelText")
 	}
 }
 

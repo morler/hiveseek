@@ -647,9 +647,6 @@ func TestAgentPreToolHookHandlerCanRewriteInputAndAddContext(t *testing.T) {
 				if result.Outcome == "" {
 					t.Fatalf("hook-injected result lost its outcome: %+v", result)
 				}
-				if result.ModelText != result.ModelText {
-					t.Fatalf("model channel must follow the hook-mutated text: ModelText=%q Content=%q", result.ModelText, result.ModelText)
-				}
 			}
 		}
 	}
