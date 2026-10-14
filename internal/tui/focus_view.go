@@ -189,13 +189,6 @@ type focusSummaryEntry struct {
 	identity string
 }
 
-func (s *focusToolSummary) add(msg tuirender.UIMessage) {
-	s.used = true
-	state := focusToolState(msg)
-	item := focusSummarizeToolMessage(msg)
-	s.addItemWithState(state, item)
-}
-
 func (s focusToolSummary) shouldSplitBefore(kind, state string) bool {
 	if !s.used {
 		return false

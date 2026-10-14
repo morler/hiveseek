@@ -422,10 +422,6 @@ func (c *Client) streamWithRetriesAuth(ctx context.Context, requestBaseURL, apiK
 	}
 }
 
-func (c *Client) sendStreamRequest(ctx context.Context, requestBaseURL string, body []byte) (*http.Response, error) {
-	return c.sendStreamRequestWithKey(ctx, requestBaseURL, c.apiKey, body)
-}
-
 func (c *Client) sendStreamRequestWithKey(ctx context.Context, requestBaseURL, apiKey string, body []byte) (*http.Response, error) {
 	return c.sendStreamRequestWithKeyPath(ctx, requestBaseURL, apiKey, body, "/chat/completions")
 }
@@ -938,11 +934,6 @@ func toolResultReplayDiagnostics(history []core.Message, messages []map[string]a
 			diag.compacted++
 		}
 	}
-	return diag
-}
-
-func rawToolResultReplayDiagnostics(history []core.Message) deepSeekReplayDiagnostics {
-	diag, _ := rawToolResultReplayDiagnosticsWithContent(history)
 	return diag
 }
 

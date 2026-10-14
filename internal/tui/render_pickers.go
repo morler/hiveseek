@@ -5,16 +5,6 @@ import (
 	"strings"
 )
 
-func (m model) pageLabel() string {
-	if m.page == pageLogs {
-		return "logs"
-	}
-	if m.page == pageDiff {
-		return "diff"
-	}
-	return "chat"
-}
-
 func (m model) renderPalette() string {
 	rows := []string{
 		pickerTitle("Command Palette"),

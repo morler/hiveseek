@@ -51,14 +51,6 @@ func metadataBool(v any) bool {
 	return ok && b
 }
 
-func metadataString(v any) string {
-	s, ok := v.(string)
-	if !ok {
-		return ""
-	}
-	return s
-}
-
 func (m *model) handleServiceEvent(ev protocol.Event) (tea.Cmd, bool, bool) {
 	if ev.AutoAcceptKnown {
 		m.autoAccept = ev.AutoAccept

@@ -278,14 +278,6 @@ func (c *Client) abortStart(cancel context.CancelFunc, cleanup *shell.CommandCle
 	c.mu.Unlock()
 }
 
-// readyChan returns the channel closed when the in-flight Start attempt
-// finishes (successfully or not). Nil if no Start has begun yet.
-func (c *Client) readyChan() <-chan struct{} {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.readyCh
-}
-
 // alive reports whether the server process and connection are still healthy.
 func (c *Client) alive() bool {
 	c.mu.Lock()

@@ -293,15 +293,6 @@ func (t *shellTask) cancelRun() {
 	}
 }
 
-func (t *shellTask) setDiagnosis(diagnosis shellDiagnosis) {
-	if t == nil || diagnosis.Reason == "" {
-		return
-	}
-	t.mu.Lock()
-	t.diagnosis = diagnosis
-	t.mu.Unlock()
-}
-
 func (t *shellTask) setTimeoutContext(timeoutCtx shellTimeoutContext) {
 	if t == nil {
 		return
@@ -309,13 +300,6 @@ func (t *shellTask) setTimeoutContext(timeoutCtx shellTimeoutContext) {
 	t.mu.Lock()
 	t.timeoutCtx = timeoutCtx
 	t.mu.Unlock()
-}
-
-func (t *shellTask) waitDone() {
-	if t == nil || t.done == nil {
-		return
-	}
-	<-t.done
 }
 
 func (t *shellTask) closeDone() {

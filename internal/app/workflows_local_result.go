@@ -238,33 +238,6 @@ func (a *App) buildWorkflowRunSnapshotLocalResult(runID string) *LocalResult {
 	}
 }
 
-func (a *App) buildWorkflowEventsLocalResult(runID string) *LocalResult {
-	run, res, err := a.loadWorkflowRunForLocalResult(runID)
-	if err != nil {
-		text := "Workflow\n\nerror: " + err.Error()
-		return &LocalResult{Kind: "workflow", Title: "Workflow", Fields: []LocalResultField{{Label: "Error", Value: err.Error(), Tone: "error"}}, PlainText: text}
-	}
-	if res != nil {
-		return res
-	}
-	summary := workflowRunSummary(run)
-	lines := []string{"Workflow events", "", "run: " + string(run.ID), "status: " + summary.Status, "", "events:"}
-	eventFields := make([]LocalResultField, 0, len(run.Events))
-	for _, ev := range run.Events {
-		label := workflowEventLabel(ev)
-		value := workflowEventValue(ev)
-		lines = append(lines, "  - "+label+": "+value)
-		eventFields = append(eventFields, LocalResultField{Label: label, Value: value, Tone: workflowEventTone(ev)})
-	}
-	return &LocalResult{
-		Kind:      "workflow",
-		Title:     "Workflow Events " + string(run.ID),
-		Fields:    []LocalResultField{{Label: "Run", Value: string(run.ID)}, {Label: "Status", Value: summary.Status, Tone: workflowStatusTone(summary.Status)}},
-		Sections:  []LocalResultSection{{Title: "Events", Fields: eventFields}},
-		PlainText: strings.Join(lines, "\n"),
-	}
-}
-
 func (a *App) CancelWorkflowRun(runID string) (*LocalResult, error) {
 	return a.cancelWorkflowLocalResult(runID)
 }

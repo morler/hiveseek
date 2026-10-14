@@ -145,21 +145,3 @@ func firstNonEmptyLine(s string) string {
 func isEnvironmentInventoryBlock(text string) bool {
 	return history.IsEnvironmentInventoryBlock(text)
 }
-
-func normalizeToolCallLabel(text string) string {
-	t := strings.TrimSpace(text)
-	if t == "" {
-		return t
-	}
-	if strings.HasPrefix(t, "shell_run:") {
-		cmd := strings.TrimSpace(strings.TrimPrefix(t, "shell_run:"))
-		if cmd != "" {
-			return "Running " + cmd
-		}
-		return "Running shell command"
-	}
-	if t == "shell_run" {
-		return "Running shell command"
-	}
-	return t
-}

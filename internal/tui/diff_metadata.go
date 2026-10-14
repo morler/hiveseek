@@ -18,17 +18,6 @@ const (
 	approvalFileDiffPreviewMaxLines = 80
 )
 
-func renderFileDiffMetadataMarkdown(metadata map[string]any, maxLines int) string {
-	plain := renderFileDiffMetadataPlain(metadata, maxLines)
-	if strings.TrimSpace(plain) == "" {
-		return ""
-	}
-	if strings.HasPrefix(strings.TrimSpace(plain), "diff preview unavailable:") {
-		return plain
-	}
-	return "```diff\n" + plain + "\n```"
-}
-
 func renderFileDiffMetadataForChat(metadata map[string]any, maxLines int) string {
 	return renderApprovalDiffMetadata(metadata, maxLines)
 }

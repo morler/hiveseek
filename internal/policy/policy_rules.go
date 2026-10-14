@@ -6,10 +6,6 @@ import (
 	"strings"
 )
 
-func (p RulePolicy) evaluate(permission, pattern string) PermissionRule {
-	rule, _ := p.evaluateDetailed(permission, pattern)
-	return rule
-}
 func (p RulePolicy) evaluateDetailed(permission, pattern string) (PermissionRule, bool) {
 	fallback := PermissionRule{Permission: permission, Pattern: "*", Action: p.Default}
 	if fallback.Action == "" {

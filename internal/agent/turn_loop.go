@@ -89,16 +89,13 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 		return nil, fmt.Errorf("%w: spent $%.6f >= cap $%.6f", ErrBudgetExceeded, spent, a.budgetWarningUSD)
 	}
 
-	createdMessages := make([]core.Message, 0, len(newMessages))
 	for _, msg := range newMessages {
 		msg.SessionID = sessionID
 		msg = core.NormalizeMessageContent(msg)
-		created, err := a.store.Create(ctx, msg)
-		if err != nil {
+		if _, err := a.store.Create(ctx, msg); err != nil {
 			a.active.Delete(sessionID)
 			return nil, fmt.Errorf("create user message: %w", err)
 		}
-		createdMessages = append(createdMessages, created)
 	}
 	history, err := a.store.List(ctx, sessionID)
 	if err != nil {

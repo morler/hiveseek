@@ -38,10 +38,6 @@ func (a *Agent) ensureApprovalCacheLoaded(ctx context.Context, sessionID string)
 	a.approvalCache.SetLoaded(sessionID)
 }
 
-func (a *Agent) persistApproval(ctx context.Context, sessionID, key string) {
-	a.persistApprovals(ctx, sessionID, []string{key})
-}
-
 func (a *Agent) persistApprovals(ctx context.Context, sessionID string, keys []string) {
 	as, ok := a.store.(store.ApprovalStore)
 	if !ok {

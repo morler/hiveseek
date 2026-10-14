@@ -101,19 +101,6 @@ func HandleCommand(store *Store, line string) (string, bool, error) {
 	return "", true, fmt.Errorf("usage: /memory [list|path|show <global|project>/<name>|forget <global|project>/<name>]")
 }
 
-type memoryToolBase struct {
-	store *Store
-}
-
-func (t memoryToolBase) storeForWorkspace(workspace string) *Store {
-	if t.store == nil {
-		return NewStore("", workspace)
-	}
-	cp := *t.store
-	cp.workspaceRoot = workspace
-	return &cp
-}
-
 type rememberTool struct{ store *Store }
 
 func (t rememberTool) Name() string { return "remember" }

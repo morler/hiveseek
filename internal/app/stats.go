@@ -6,14 +6,6 @@ import (
 	"time"
 )
 
-func (a *App) buildStats() string {
-	return a.buildStatsViewAt("overview", time.Now())
-}
-
-func (a *App) buildStatsView(view string) string {
-	return a.buildStatsViewAt(view, time.Now())
-}
-
 func (a *App) buildStatsViewAt(view string, now time.Time) string {
 	usage := readUsageStats(filepath.Join(a.cfg.DataDir, "usage"), now)
 	toolInput := readToolInputStats(a.sessionsDir)

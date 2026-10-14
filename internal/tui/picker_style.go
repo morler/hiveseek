@@ -92,31 +92,6 @@ func pickerInlineDescriptionRow(label, description string, selected bool, labelW
 	return pickerSuggestionRow(label, "", selected, labelWidth)
 }
 
-func pickerCheckboxRow(label string, enabled bool, markerTone string, description string, selected bool, labelWidth int) string {
-	prefix := "  "
-	if selected {
-		prefix = "> "
-	}
-	marker := " "
-	if enabled {
-		marker = "x"
-	}
-	labelStyle := pickerTextStyle
-	if selected {
-		labelStyle = pickerSelectedStyle
-	}
-	head := pickerSectionStyle.Render(prefix) +
-		pickerSectionStyle.Render("[") +
-		pickerTone(marker, markerTone) +
-		pickerSectionStyle.Render("]") +
-		" " +
-		labelStyle.Render(padVisibleRight(label, labelWidth))
-	if desc := strings.TrimSpace(description); desc != "" {
-		head += " " + pickerSection(desc)
-	}
-	return head
-}
-
 func pickerSessionChoiceRow(choice sessionChoiceDisplay, selected bool) string {
 	prefix := "  "
 	if selected {

@@ -11,10 +11,6 @@ import (
 	"github.com/usewhale/whale/internal/skills"
 )
 
-func (p RulePolicy) externalDirs(command string) []string {
-	return p.externalDirsFromRoot(command, p.WorkspaceRoot, false)
-}
-
 // externalDirsFromRoot extracts outside-workspace directories a command would
 // touch. programPathTrusted reports whether the command word is a resolved
 // program path (as seen at the exec boundary, e.g. /bin/cat) — only then is it

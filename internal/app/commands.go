@@ -39,7 +39,3 @@ func resolveCLIResumeID(args []string) (string, bool, error) {
 func handleCommand(line, currentSessionID string, now time.Time) (appcommands.Result, error) {
 	return appcommands.Parse(line, currentSessionID, now)
 }
-
-func planPromptFromSlash(line string) (string, bool) {
-	return appcommands.PlanPromptFromSlash(line)
-}

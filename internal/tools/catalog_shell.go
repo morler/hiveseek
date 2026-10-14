@@ -110,10 +110,6 @@ func shellWaitTimeoutDescription() string {
 	return fmt.Sprintf("How long to poll the existing task in milliseconds; defaults to %d and clamps at %d. Timeout does not cancel the process.", defaultShellWaitTimeoutMS, maxShellWaitTimeoutMS)
 }
 
-func shellReadOnlyCheck(args map[string]any) bool {
-	return shellReadOnlyCheckFor(shell.DescribeRuntime())(args)
-}
-
 func shellReadOnlyCheckFor(rt shell.RuntimeDescription) func(args map[string]any) bool {
 	return func(args map[string]any) bool {
 		return shellReadOnlyCheckWithRuntime(rt, args)

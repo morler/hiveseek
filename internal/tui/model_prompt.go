@@ -210,42 +210,6 @@ func (m *model) submitLocalNoTurn(submit appcommands.SubmitClassification) tea.C
 	return nil
 }
 
-func (m *model) submitSteeringPrompt(value string) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return
-	}
-	binding := m.currentSkillBinding(value)
-	clientInputID := m.nextPendingInputID()
-	m.clearEphemeralMessages()
-	if m.assembler != nil && m.assembler.Len() > 0 {
-		m.commitLiveTranscript(false)
-	}
-	m.recordPromptHistory(value)
-	m.resetHistoryNavigation()
-	m.appendTranscript("you", tuirender.KindText, visibleSubmittedText(value))
-	m.input.SetValue("")
-	m.skillBinding = nil
-	m.resetWindowsPasteFallbackInputState()
-	m.slash.matches = nil
-	m.slash.selected = 0
-	m.slash.argumentHint = ""
-	clearFileSuggestions(m)
-	m.pendingSteers = append(m.pendingSteers, pendingSteer{
-		ID:           clientInputID,
-		Text:         value,
-		SkillBinding: binding,
-	})
-	m.status = "sent"
-	m.dispatchIntent(protocol.Intent{Kind: protocol.IntentSubmit, Input: value, ClientInputID: clientInputID, SkillBinding: binding})
-	m.refreshViewportContentFollow(true)
-}
-
-func (m *model) nextPendingInputID() string {
-	m.nextClientInputID++
-	return fmt.Sprintf("pending-%d", m.nextClientInputID)
-}
-
 func (m *model) markPendingInputAccepted(clientInputID string) {
 	if clientInputID == "" {
 		return
@@ -298,30 +262,6 @@ func (m *model) restoreTextToComposer(text string) tea.Cmd {
 	cmd := m.updateSlashMatches()
 	m.refreshViewportContent()
 	return cmd
-}
-
-func (m *model) submitPendingSteersNow() tea.Cmd {
-	if len(m.pendingSteers) == 0 {
-		return nil
-	}
-	parts := make([]string, 0, len(m.pendingSteers))
-	for _, steer := range m.pendingSteers {
-		if text := strings.TrimSpace(steer.Text); text != "" {
-			parts = append(parts, text)
-		}
-	}
-	m.pendingSteers = nil
-	value := strings.TrimSpace(strings.Join(parts, "\n"))
-	if value == "" {
-		return nil
-	}
-	m.startBusy()
-	m.status = "running"
-	m.clearEphemeralMessages()
-	m.beginTurnTranscript()
-	m.dispatchIntent(protocol.Intent{Kind: protocol.IntentSubmit, Input: value})
-	m.refreshViewportContentFollow(true)
-	return busyTickCmd()
 }
 
 func (m *model) prepareQueuedPromptAfterInterrupt() {
@@ -377,10 +317,6 @@ func (m *model) popQueuedPrompt() (queuedPrompt, bool) {
 	copy(m.queuedPrompts, m.queuedPrompts[1:])
 	m.queuedPrompts = m.queuedPrompts[:len(m.queuedPrompts)-1]
 	return next, true
-}
-
-func (m *model) restoreQueuedPromptsToComposer() (bool, tea.Cmd) {
-	return m.restoreQueuedPromptsToComposerWithCurrent(m.input.Value())
 }
 
 func (m *model) restoreQueuedPromptsToComposerWithWindowsInput(snapshot windowsBusyInputSnapshot) (bool, tea.Cmd) {

@@ -230,10 +230,3 @@ func (m model) shouldSkipFileSuggestionRefreshForKey(msg tea.KeyMsg) bool {
 	_, hasAtToken := m.input.CurrentPrefixedToken('@')
 	return hasAtToken
 }
-
-func (m *model) applyPalette() {
-	if m.palette.selected < 0 || m.palette.selected >= len(m.palette.actions) {
-		return
-	}
-	m.palette.actions[m.palette.selected].Run(m)
-}

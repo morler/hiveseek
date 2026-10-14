@@ -7,12 +7,6 @@ import (
 	"github.com/usewhale/whale/internal/core"
 )
 
-// classifierTranscriptEntry is a single turn in the classifier transcript.
-type classifierTranscriptEntry struct {
-	Role    string // "user" or "assistant"
-	Content string // compact JSONL line
-}
-
 // buildClassifierTranscript builds a compact transcript from conversation
 // history for the classifier. Translated from Claude Code's buildTranscriptEntries
 // and toCompactBlock in yoloClassifier.ts.

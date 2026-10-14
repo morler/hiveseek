@@ -331,10 +331,6 @@ func appendHookContextValue(existing any, hookContext string) any {
 	}
 }
 
-func modeBlockedDetails(mode session.Mode) (code, message, summary string, data map[string]any) {
-	return modeBlockedDetailsForCall(mode, core.ToolCall{})
-}
-
 func modeBlockedDetailsForCall(mode session.Mode, call core.ToolCall) (code, message, summary string, data map[string]any) {
 	switch mode {
 	case session.ModeAsk:

@@ -129,10 +129,6 @@ func workflowInt64Value(v any) (int64, bool) {
 	}
 }
 
-func workflowStringSliceLen(v any) int {
-	return len(workflowStringSlice(v))
-}
-
 func workflowStringSlice(v any) []string {
 	switch x := v.(type) {
 	case []string:

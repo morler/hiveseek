@@ -366,11 +366,6 @@ func (t cancelSubagentTool) Run(_ context.Context, call core.ToolCall) (core.Too
 	})
 }
 
-func encodeInput(v any) string {
-	b, _ := core.MarshalToolJSON(v)
-	return string(b)
-}
-
 func errorContent(code, message string) string {
 	return fmt.Sprintf(`{"ok":false,"code":%q,"message":%q}`, code, message)
 }

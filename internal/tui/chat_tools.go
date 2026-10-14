@@ -397,16 +397,6 @@ func shellResultRole(role string) string {
 	}
 }
 
-func shouldShowUnmatchedToolResult(toolName, role, text string) bool {
-	if strings.TrimSpace(text) == "" {
-		return false
-	}
-	if (toolDisplayKind(toolName) == "todo" || toolDisplayKind(toolName) == "plan") && strings.TrimSpace(role) == "result_ok" {
-		return false
-	}
-	return true
-}
-
 func toolDisplayKind(toolName string) string {
 	name := strings.TrimSpace(toolName)
 	if isMCPDisplayTool(name) {

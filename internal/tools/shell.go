@@ -422,37 +422,6 @@ func shellArchiveMetadata(path string) map[string]any {
 	}
 }
 
-func shellRunForegroundTimeoutResult(call core.ToolCall, snap shellTaskSnapshot, requestedTimeoutMS int, effectiveTimeoutMS int, warnings []string) (core.ToolResult, error) {
-	stdout, stdoutTr := truncateTextSmart(snap.Stdout, maxToolTextChars)
-	stderr, stderrTr := truncateTextSmart(snap.Stderr, maxToolTextChars)
-	result := shellRunResult(shellRunResultInput{
-		Status:             "timeout",
-		SummaryParts:       []string{"command timed out"},
-		Command:            snap.Command,
-		CWD:                snap.CWD,
-		Stdout:             stdout,
-		Stderr:             stderr,
-		StdoutRaw:          snap.Stdout,
-		StderrRaw:          snap.Stderr,
-		StdoutTruncation:   stdoutTr,
-		StderrTruncation:   stderrTr,
-		DurationMS:         shellTaskDurationMS(snap),
-		ExitCode:           nil,
-		TimedOut:           true,
-		RequestedTimeoutMS: requestedTimeoutMS,
-		EffectiveTimeoutMS: effectiveTimeoutMS,
-		Diagnosis:          snap.Diagnosis,
-		Warnings:           warnings,
-		Transport:          snap.Transport,
-		CanWrite:           snap.CanWrite,
-	})
-	content, marshalErr := core.MarshalToolEnvelope(core.ToolEnvelope{Success: false, Data: result, Message: "command timed out", Code: "timeout"})
-	if marshalErr != nil {
-		return marshalToolError(call, "timeout", "command timed out"), nil
-	}
-	return core.ToolResult{ToolCallID: call.ID, Name: call.Name, ModelText: content, Outcome: core.OutcomeTimeout, Code: "timeout"}, nil
-}
-
 func shellRunBackgroundedResult(snap shellTaskSnapshot, requestedYieldMS int, effectiveYieldMS int, requestedMaxRuntimeMS int, effectiveMaxRuntimeMS int, warnings []string, diagnosis shellDiagnosis) map[string]any {
 	summaryParts := []string{"command still running in background"}
 	if len(warnings) > 0 {

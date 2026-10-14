@@ -355,13 +355,6 @@ func (t Tool) resolveWorkflow(ctx context.Context, call core.ToolCall, input Wor
 	return workflowToolErrorWithData(call, "workflow_not_found", workflowNotFoundMessage(name, defs), data)
 }
 
-func (t Tool) parentSessionID() string {
-	if t.parentSessionIDFunc == nil {
-		return ""
-	}
-	return strings.TrimSpace(t.parentSessionIDFunc())
-}
-
 func workflowDiscoveryData(library *Library, defs []Definition) map[string]any {
 	ready := make([]map[string]any, 0, len(defs))
 	problems := make([]map[string]any, 0)
@@ -538,55 +531,6 @@ func workflowConfirmationMetadata(data map[string]any) map[string]any {
 		if v, ok := data[key]; ok {
 			meta[key] = v
 		}
-	}
-	return meta
-}
-
-func workflowOutputData(out WorkflowOutput) map[string]any {
-	data := map[string]any{}
-	if out.Status != "" {
-		data["status"] = out.Status
-	}
-	if out.TaskID != "" {
-		data["taskId"] = out.TaskID
-	}
-	if out.RunID != "" {
-		data["runId"] = string(out.RunID)
-	}
-	if out.Summary != "" {
-		data["summary"] = out.Summary
-	}
-	if out.TranscriptDir != "" {
-		data["transcriptDir"] = out.TranscriptDir
-	}
-	if out.ScriptPath != "" {
-		data["scriptPath"] = out.ScriptPath
-	}
-	if out.SessionURL != "" {
-		data["sessionUrl"] = out.SessionURL
-	}
-	if out.Warning != "" {
-		data["warning"] = out.Warning
-	}
-	if out.Error != "" {
-		data["error"] = out.Error
-	}
-	if out.RunID != "" {
-		data["userGuidance"] = "Tell the user /workflows opens the workflow panel. Do not suggest /workflows with a run id, events, or cancel subcommands."
-	}
-	return data
-}
-
-func workflowToolMetadata(out WorkflowOutput) map[string]any {
-	meta := map[string]any{}
-	if out.RunID != "" {
-		meta["workflow_run_id"] = string(out.RunID)
-	}
-	if out.Status != "" {
-		meta["workflow_status"] = out.Status
-	}
-	if out.ScriptPath != "" {
-		meta["workflow_script_path"] = out.ScriptPath
 	}
 	return meta
 }

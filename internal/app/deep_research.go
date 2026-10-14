@@ -378,22 +378,6 @@ func (a *App) WorkflowTrusted(name string) (bool, error) {
 	return a.workflowTrusted(name)
 }
 
-func (a *App) workflowDefinition(name string) (workflow.Definition, error) {
-	if a == nil || a.workflowRunner == nil || a.workflowRunner.Library == nil {
-		return workflow.Definition{}, nil
-	}
-	defs, err := a.workflowRunner.Library.List(context.Background())
-	if err != nil {
-		return workflow.Definition{}, err
-	}
-	for _, def := range defs {
-		if def.Name == name && def.Status == workflow.DefinitionReady {
-			return def, nil
-		}
-	}
-	return workflow.Definition{}, nil
-}
-
 func (a *App) workflowResolvedScript(name string) (workflow.ResolvedScript, error) {
 	if a == nil || a.workflowRunner == nil || a.workflowRunner.Library == nil {
 		return workflow.ResolvedScript{}, nil

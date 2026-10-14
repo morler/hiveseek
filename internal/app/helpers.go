@@ -2,14 +2,6 @@ package app
 
 import "strings"
 
-func shortFingerprint(v string) string {
-	const n = 12
-	if len(v) <= n {
-		return v
-	}
-	return v[:n]
-}
-
 func containsString(xs []string, v string) bool {
 	for _, x := range xs {
 		if strings.EqualFold(strings.TrimSpace(x), strings.TrimSpace(v)) {

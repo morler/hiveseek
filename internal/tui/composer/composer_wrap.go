@@ -1,7 +1,6 @@
 package composer
 
 import (
-	"strings"
 	"unicode"
 
 	rw "github.com/mattn/go-runewidth"
@@ -135,10 +134,6 @@ func wrappedLineCount(runes []rune, width int) int {
 	}
 
 	return lines
-}
-
-func repeatSpaces(n int) []rune {
-	return []rune(strings.Repeat(" ", n))
 }
 
 func (c *Composer) reflow() {

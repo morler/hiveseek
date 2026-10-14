@@ -360,7 +360,6 @@ func (m *Manager) maybeMonitorRestart(name string, srv *ServerConfig, client *Cl
 			cancel()
 			m.startWG.Done()
 			if err != nil {
-				totalRestarts++
 				m.setStatus(name, "failed", command, err.Error())
 				return // exit; next tool call will trigger a fresh start
 			}

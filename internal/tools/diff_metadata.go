@@ -57,27 +57,6 @@ func fileDiffMetadata(changes []fileChangePreview) map[string]any {
 	}
 }
 
-func fileDiffCounts(changes []fileChangePreview) (int, int) {
-	additions := 0
-	deletions := 0
-	for _, change := range changes {
-		_, add, del := unifiedDiff(change.path, change.before, change.after)
-		additions += add
-		deletions += del
-	}
-	return additions, deletions
-}
-
-func fileDiffPreviewError(err error) map[string]any {
-	if err == nil {
-		return nil
-	}
-	return map[string]any{
-		"kind":          fileDiffMetadataKind,
-		"preview_error": err.Error(),
-	}
-}
-
 func unifiedDiff(path, before, after string) (string, int, int) {
 	oldLines := splitDiffLines(before)
 	newLines := splitDiffLines(after)

@@ -162,16 +162,6 @@ func (c *turnDeltaCoalescers) add(kind EventKind, text string) {
 	c.mu.Unlock()
 }
 
-func (c *turnDeltaCoalescers) flushBestEffort() {
-	if c == nil {
-		return
-	}
-	c.mu.Lock()
-	chunks := c.drainLocked(time.Now())
-	c.mu.Unlock()
-	c.flushChunksBestEffort(chunks)
-}
-
 func (c *turnDeltaCoalescers) drainLocked(now time.Time) []deltaChunk {
 	if len(c.chunks) == 0 {
 		return nil

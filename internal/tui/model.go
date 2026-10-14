@@ -240,7 +240,6 @@ type model struct {
 	inHistoryNav                     bool
 	queuedPrompts                    []queuedPrompt
 	pendingSteers                    []pendingSteer
-	nextClientInputID                int
 	submitQueuedPromptAfterInterrupt bool
 	composerAttachments              []composerAttachment
 	nativeScrollbackPrinted          int
@@ -311,7 +310,6 @@ type skillManagerItem struct {
 type svcMsg protocol.Event
 type svcBatchMsg []protocol.Event
 
-type errMsg struct{ err error }
 type quitTimeoutMsg struct{}
 type busyTickMsg struct{}
 type bgShellTickMsg struct{}

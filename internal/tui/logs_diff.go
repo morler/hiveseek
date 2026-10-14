@@ -106,13 +106,6 @@ func truncateLine(s string, max int) string {
 	return string(runes[:max]) + "..."
 }
 
-func tail(items []string, n int) []string {
-	if n <= 0 || len(items) <= n {
-		return items
-	}
-	return items[len(items)-n:]
-}
-
 func clampInt(v, low, high int) int {
 	if v < low {
 		return low

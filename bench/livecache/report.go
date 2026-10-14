@@ -178,13 +178,6 @@ func meanInt(results []runResult, fn func(runResult) int) float64 {
 	return float64(sum) / float64(len(results))
 }
 
-func pct(num, denom int) string {
-	if denom == 0 {
-		return "-"
-	}
-	return fmt.Sprintf("%.0f%%", (float64(num)/float64(denom))*100)
-}
-
 func pctFloat(v float64) string {
 	return fmt.Sprintf("%.1f%%", v*100)
 }

@@ -82,7 +82,6 @@ func buildCacheShapeForRequestWithRuntime(requestKind string, history []core.Mes
 	}
 	if flushed := flushPending(); len(flushed) > 0 {
 		log = append(log, flushed...)
-		providerMessageIndex += len(flushed)
 	}
 
 	tailLen := min(cacheShapeTailMessages, len(log))

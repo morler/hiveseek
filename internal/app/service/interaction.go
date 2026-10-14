@@ -178,10 +178,6 @@ func approvalDecisionScope(decision policy.ApprovalDecision, scope string) strin
 	return ""
 }
 
-func (s *Service) sessionGrantLocked(sessionID, key string) bool {
-	return s.sessionGrantAllLocked(sessionID, []string{key})
-}
-
 func (s *Service) sessionGrantAllLocked(sessionID string, keys []string) bool {
 	if len(keys) == 0 {
 		return false
@@ -196,10 +192,6 @@ func (s *Service) sessionGrantAllLocked(sessionID string, keys []string) bool {
 		}
 	}
 	return true
-}
-
-func (s *Service) grantSessionLocked(sessionID, key string) {
-	s.grantSessionAllLocked(sessionID, []string{key})
 }
 
 func (s *Service) grantSessionAllLocked(sessionID string, keys []string) {

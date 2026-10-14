@@ -154,55 +154,6 @@ func workflowTaskActorKind(ev workflow.RunEvent) string {
 	return strings.TrimSpace(workflowLocalString(ev.Data["actor_kind"]))
 }
 
-func workflowEventLabel(ev workflow.RunEvent) string {
-	base := strings.TrimSpace(ev.Type)
-	if base == "" {
-		base = "event"
-	}
-	if ev.WorkflowName != "" && (ev.Type == workflow.EventWorkflowStarted || ev.Type == workflow.EventWorkflowCompleted || ev.Type == workflow.EventWorkflowFailed) {
-		return base + " · " + ev.WorkflowName
-	}
-	if ev.TaskID != "" {
-		return base + " · " + string(ev.TaskID)
-	}
-	if ev.Phase != "" && ev.Type != workflow.EventPhaseStarted {
-		return base + " · " + ev.Phase
-	}
-	return base
-}
-
-func workflowEventValue(ev workflow.RunEvent) string {
-	parts := []string{}
-	if !ev.Time.IsZero() {
-		parts = append(parts, formatWorkflowTime(ev.Time))
-	}
-	if ev.Status != "" {
-		parts = append(parts, ev.Status)
-	}
-	if ev.WorkflowName != "" {
-		parts = append(parts, "workflow "+ev.WorkflowName)
-	}
-	if ev.ParentTaskID != "" {
-		parts = append(parts, "parent "+string(ev.ParentTaskID))
-	}
-	if ev.Phase != "" {
-		parts = append(parts, "phase "+ev.Phase)
-	}
-	if ev.Label != "" {
-		parts = append(parts, ev.Label)
-	}
-	if workflowEventCached(ev) {
-		parts = append(parts, "cached")
-	}
-	if msg := strings.TrimSpace(ev.Message); msg != "" {
-		parts = append(parts, msg)
-	}
-	if len(parts) == 0 {
-		return "-"
-	}
-	return strings.Join(parts, " · ")
-}
-
 func workflowEventCached(ev workflow.RunEvent) bool {
 	if ev.Data == nil {
 		return false
@@ -213,19 +164,6 @@ func workflowEventCached(ev workflow.RunEvent) bool {
 	resumeData, _ := ev.Data["resume"].(map[string]any)
 	cached, _ := resumeData["cached"].(bool)
 	return cached
-}
-
-func workflowEventTone(ev workflow.RunEvent) string {
-	switch ev.Type {
-	case workflow.EventRunFailed, workflow.EventTaskFailed, workflow.EventWorkflowFailed:
-		return "error"
-	case workflow.EventRunCancelled, workflow.EventTaskCancelled:
-		return "warn"
-	case workflow.EventRunCompleted, workflow.EventTaskCompleted, workflow.EventWorkflowCompleted, workflow.EventBudgetUpdated:
-		return "info"
-	default:
-		return ""
-	}
 }
 
 func workflowUsageValues(v any) workflowUsageSnapshot {

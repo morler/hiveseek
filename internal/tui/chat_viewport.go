@@ -318,19 +318,6 @@ func (m model) startupHeaderMessage() *tuirender.UIMessage {
 	return &tuirender.UIMessage{Role: "header", Kind: tuirender.KindText, Text: header}
 }
 
-func (m model) chatContent(width int) string {
-	lines := tuirender.ChatLines(m.chatMessages(), max(20, width-2))
-	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
-}
-
-func (m model) chatTailContent(width, height int) string {
-	messages := m.chatMessages()
-	renderWidth := max(20, width-2)
-	messages = m.chatTailMessagesForView(messages, renderWidth, height)
-	lines := tuirender.ChatLines(messages, renderWidth)
-	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
-}
-
 func (m *model) chatTailMessagesForView(messages []tuirender.UIMessage, renderWidth, height int) []tuirender.UIMessage {
 	if len(messages) > chatTailRenderMessageLimit {
 		messages = messages[len(messages)-chatTailRenderMessageLimit:]

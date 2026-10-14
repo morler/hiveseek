@@ -9,11 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
-
-// headerTimeout is how long the reader waits for the Content-Length header line.
-const headerTimeout = 30 * time.Second
 
 // Message is a JSON-RPC 2.0 message.
 type Message struct {

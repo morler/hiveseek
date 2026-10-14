@@ -690,32 +690,6 @@ func approvalCleanPath(path string) string {
 	return filepath.ToSlash(filepath.Clean(path))
 }
 
-func approvalPatchFiles(body map[string]any) []string {
-	patch, _ := body["patch"].(string)
-	if strings.TrimSpace(patch) == "" {
-		return nil
-	}
-	lines := strings.Split(strings.ReplaceAll(strings.ReplaceAll(patch, "\r\n", "\n"), "\r", "\n"), "\n")
-	seen := map[string]bool{}
-	for _, line := range lines {
-		for _, prefix := range []string{"*** Update File: ", "*** Add File: ", "*** Delete File: "} {
-			if !strings.HasPrefix(line, prefix) {
-				continue
-			}
-			path := approvalCleanPath(strings.TrimPrefix(line, prefix))
-			if path != "" {
-				seen[path] = true
-			}
-		}
-	}
-	files := make([]string, 0, len(seen))
-	for file := range seen {
-		files = append(files, file)
-	}
-	sort.Strings(files)
-	return files
-}
-
 func compactApprovalKeys(keys []string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(keys))

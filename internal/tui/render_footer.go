@@ -39,17 +39,6 @@ func appendFooterViewIndicator(base, indicator string, width int) string {
 	return base + segment
 }
 
-func footerBranchCanRenderWithDir(base, cwd, branch string, width, reserve int) bool {
-	if strings.TrimSpace(branch) == "" {
-		return false
-	}
-	required := lipgloss.Width(base) + footerBranchReserve(branch) + reserve
-	if cwd != "" {
-		required += footerDirReserve(cwd)
-	}
-	return required <= width
-}
-
 func footerBranchReserveForWidth(base, branch string, width, reserve int) int {
 	branchReserve := footerBranchReserve(branch)
 	if branchReserve == 0 {
@@ -100,21 +89,6 @@ func thinkingFooterColor(thinking string) lipgloss.Color {
 	default:
 		return tuitheme.Default.InfoSoft
 	}
-}
-
-func footerDirReserve(cwd string) int {
-	trimmed := strings.TrimRight(cwd, `/\`)
-	if trimmed == "" {
-		trimmed = cwd
-	}
-	tail := trimmed
-	if idx := strings.LastIndexAny(trimmed, `/\`); idx >= 0 && idx < len(trimmed)-1 {
-		tail = trimmed[idx+1:]
-	}
-	if tail == "" {
-		return 0
-	}
-	return lipgloss.Width("  ") + lipgloss.Width(tail)
 }
 
 func footerBranchReserve(branch string) int {

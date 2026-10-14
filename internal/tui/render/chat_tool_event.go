@@ -430,14 +430,3 @@ func toolEventVerbColor(m UIMessage) lipgloss.Color {
 		return tuitheme.Default.Text
 	}
 }
-
-func toolNamePrefix(text string) string {
-	idx := strings.Index(text, ":")
-	if idx <= 0 {
-		return ""
-	}
-	name := strings.TrimSpace(text[:idx])
-	name = strings.TrimPrefix(name, "[")
-	name = strings.TrimSuffix(name, "]")
-	return name
-}
