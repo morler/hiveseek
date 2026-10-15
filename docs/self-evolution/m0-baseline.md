@@ -57,7 +57,9 @@ expected non-force branch delete warning, got "git branch -d worktree-unmerged: 
 | `VerificationTimeout` | `15 * time.Minute` | 界定整个"构建 + 验证"操作（不是单步）；M0 实测 18.28s 为热缓存下界，保留 15 分钟给冷构建与更慢机器 |
 | `ReadyTimeout` | `30 * time.Second` | 界定候选启动；M0 实测约 14ms，保留 30 秒 |
 
-调整路径：只由维护者审阅代码改动调整，并同步更新本报告与 `baseline-v1.json`；不接受运行时输入，也不接受模型自定值。
+调整路径：只由维护者审阅代码改动调整，并同步更新本报告、`baseline-v1.json` 与 `internal/selfdev/limits_test.go`；不接受运行时输入，也不接受模型自定值。常量、报告与记录值都被测试钉住，只改前两处会让 `go test ./...` 直接失败。
+
+批准路径：`status` 转 `approved` 并绑定 hash 时，同步更新 `internal/selfdev/baseline_test.go`（它钉住"待批准"状态），否则 `go test ./...` 失败。
 
 ## 5. 信任面清单
 

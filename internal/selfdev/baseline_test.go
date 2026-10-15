@@ -1,14 +1,19 @@
 package selfdev
 
 import (
+	"bufio"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 type baselineRecord struct {
@@ -167,12 +172,6 @@ func TestM0BaselineRecord(t *testing.T) {
 			t.Fatalf("timeouts_seconds[%q] = %v, want %v (the constants in limits.go are the source of truth)", name, got, want)
 		}
 	}
-	if want := (15 * time.Minute).Seconds(); wantTimeouts["verification"] != want {
-		t.Fatalf("VerificationTimeout = %v, want %v", VerificationTimeout, 15*time.Minute)
-	}
-	if want := (30 * time.Second).Seconds(); wantTimeouts["ready"] != want {
-		t.Fatalf("ReadyTimeout = %v, want %v", ReadyTimeout, 30*time.Second)
-	}
 
 	wantIdentity := []string{
 		"source_root",
@@ -194,14 +193,20 @@ func TestM0BaselineRecord(t *testing.T) {
 	checkTrustedFiles(t, rec.TrustedFiles)
 }
 
-func loadBaselineRecord(t *testing.T) baselineRecord {
+func repoRoot(t *testing.T) string {
 	t.Helper()
 
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("cannot locate the test file to resolve the repository root")
 	}
-	path := filepath.Join(filepath.Dir(file), "..", "..", "docs", "self-evolution", "baseline-v1.json")
+	return filepath.Join(filepath.Dir(file), "..", "..")
+}
+
+func loadBaselineRecord(t *testing.T) baselineRecord {
+	t.Helper()
+
+	path := filepath.Join(repoRoot(t), "docs", "self-evolution", "baseline-v1.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read M0 baseline record: %v", err)
@@ -232,6 +237,13 @@ func checkDependencies(t *testing.T, deps dependencyDigest) {
 	}
 	if !equalStrings(paths, []string{"go.mod", "go.sum"}) {
 		t.Fatalf("dependency files = %v, want [go.mod go.sum]", paths)
+	}
+	var rows strings.Builder
+	for _, f := range deps.Files {
+		fmt.Fprintf(&rows, "%s\t%s\n", f.Path, f.SHA256)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(rows.String()))); got != deps.SHA256 {
+		t.Fatalf("dependencies.sha256 = %q, want %q recomputed from the listed rows", deps.SHA256, got)
 	}
 }
 
@@ -283,6 +295,13 @@ func checkTrustedFiles(t *testing.T, col trustedFileCollection) {
 		}
 		roles[f.Role]++
 	}
+	var rows strings.Builder
+	for _, f := range col.Files {
+		fmt.Fprintf(&rows, "%s\t%s\t%s\n", f.Role, f.Path, f.SHA256)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(rows.String()))); got != col.SHA256 {
+		t.Fatalf("trusted_files.sha256 = %q, want %q recomputed from the listed rows", col.SHA256, got)
+	}
 
 	want := map[string]int{
 		"baseline_test":    wantBaselineTests,
@@ -306,4 +325,83 @@ func equalStrings(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+// TestM0BaselineRecordMatchesMeasurementCommit re-hashes every trusted file and
+// dependency from the tree at measurement.commit. Later commits may legitimately
+// change the working tree (M1 edits baseline tests), so this check reads git
+// history and skips when git or that commit is unavailable.
+func TestM0BaselineRecordMatchesMeasurementCommit(t *testing.T) {
+	rec := loadBaselineRecord(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is unavailable; cannot verify the record against its measurement commit")
+	}
+	root := repoRoot(t)
+	commit := rec.Measurement.Commit
+	if err := exec.Command("git", "-C", root, "cat-file", "-e", commit+"^{commit}").Run(); err != nil {
+		t.Skipf("measurement commit %s is not present in this checkout", commit)
+	}
+
+	type hashTarget struct{ path, sha256 string }
+	targets := make([]hashTarget, 0, len(rec.TrustedFiles.Files)+len(rec.Dependencies.Files))
+	for _, f := range rec.TrustedFiles.Files {
+		targets = append(targets, hashTarget{f.Path, f.SHA256})
+	}
+	for _, f := range rec.Dependencies.Files {
+		targets = append(targets, hashTarget{f.Path, f.SHA256})
+	}
+
+	cmd := exec.Command("git", "-C", root, "cat-file", "--batch")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("open git cat-file stdin: %v", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("open git cat-file stdout: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start git cat-file: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = cmd.Wait()
+	})
+
+	out := bufio.NewReader(stdout)
+	var bad int
+	var samples []string
+	for _, target := range targets {
+		if _, err := fmt.Fprintf(stdin, "%s:%s\n", commit, target.path); err != nil {
+			t.Fatalf("request %s: %v", target.path, err)
+		}
+		header, err := out.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read blob header for %s: %v", target.path, err)
+		}
+		fields := strings.Fields(header)
+		if len(fields) != 3 || fields[1] != "blob" {
+			t.Fatalf("git cat-file %s:%s returned %q, want a blob", commit, target.path, strings.TrimSpace(header))
+		}
+		size, err := strconv.Atoi(fields[2])
+		if err != nil {
+			t.Fatalf("parse blob size for %s: %v", target.path, err)
+		}
+		content := make([]byte, size)
+		if _, err := io.ReadFull(out, content); err != nil {
+			t.Fatalf("read blob for %s: %v", target.path, err)
+		}
+		if _, err := out.ReadByte(); err != nil {
+			t.Fatalf("read blob terminator for %s: %v", target.path, err)
+		}
+		if got := fmt.Sprintf("%x", sha256.Sum256(content)); got != target.sha256 {
+			bad++
+			if len(samples) < 5 {
+				samples = append(samples, fmt.Sprintf("%s: %s at %s, record says %s", target.path, got[:12], commit[:12], target.sha256[:12]))
+			}
+		}
+	}
+	if bad > 0 {
+		t.Fatalf("%d of %d recorded files do not match %s:\n%s", bad, len(targets), commit, strings.Join(samples, "\n"))
+	}
 }
