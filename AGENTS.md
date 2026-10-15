@@ -1,29 +1,37 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
+Whale is a DeepSeek-native Go CLI/TUI coding agent; the module is `github.com/usewhale/whale` and all binaries live under `cmd/`:
 
-Whale is a Go CLI/TUI agent. The entrypoint is `cmd/whale`. Most application code lives under `internal/`:
+- `cmd/whale` — main CLI/TUI binary; `main.go` first branches into the exec-boundary wrapper when `WHALE_EXEC_BOUNDARY_WRAPPER=1`.
+- `cmd/whale-acp` — ACP server binary, built via `make build-acp` (not covered by `make build`).
+- `cmd/dev` — cross-platform dev runner that every Makefile target delegates to.
 
-- `internal/ui/cli` and `internal/tui` for Cobra commands and terminal UI
-- `internal/agent` for the turn loop, approvals, hooks, and tool orchestration
-- `internal/tools` for built-in tools such as shell, patch, file, and web actions
-- `internal/app`, `internal/session`, `internal/memory`, and `internal/store` for runtime state and persistence
-- `internal/evals` for replay and harness-based eval coverage
-- `docs/` for user-facing configuration docs
-- `scripts/smoke/` for live API smoke checks that require a real DeepSeek key
+Most application code lives under `internal/`:
+
+- `internal/ui/cli/cmd` and `internal/tui` for Cobra commands and terminal UI; `internal/app` assembles runtime services and wires them to the UI.
+- `internal/agent` for the turn loop, approvals, hooks, and stream classifier; `internal/tools` for built-in tools.
+- `internal/session`, `internal/store`, and `internal/memory` for persistence; `internal/policy` for permission and effects rules.
+- `internal/llm/deepseek` for the provider client; `internal/workflow` (QuickJS script orchestration, disabled by default), `internal/skills`, `internal/plugins`, `internal/mcp`, and `internal/lsp` for extension surfaces.
+- `internal/evals` for offline eval and replay coverage; `internal/selfdev` for in-progress self-build work (design in `docs/self-evolution-plan.md`).
+- `bench/` and `scripts/bench/` for cost and schema benchmarks; `scripts/smoke/` and `scripts/swebench/` for smoke checks and the SWE-bench-style harness.
+
+Docs are bilingual where a pair exists: `docs/x.md` is Chinese and `docs/x.en.md` is English (`README.zh.md` pairs with `README.md`); some pages like `docs/lsp-configuration.md` are Chinese-only. Update both languages together.
 
 Keep new packages focused and place tests next to the code they cover.
 
 ## Build, Test, and Development Commands
 
-- `make build` (or `go build -o bin/whale .` on Windows without Make) builds `bin/whale` with the repo-local `.gocache`
-- `make run` (or `go build -o bin/whale . && ./bin/whale`) builds and launches the interactive TUI
-- `make test` (or `go test ./...`) runs the full offline Go test suite
-- `make test-tui` (or `go test ./internal/tui/...`) runs the TUI-focused subset
-- `make test-evals` (or `go test ./internal/evals/...`) runs eval and replay tests
-- `make clean` removes `bin/` and `.gocache`
+Each command routes through `go run ./cmd/dev <command>`; the Makefile targets are thin wrappers around it, and this runner also works on Windows where `make` does not: `build`, `run`, `fmt-check`, `vet`, `test`, `test-tui`, `test-evals`, `test-windows`, `clean`.
 
-Prefer Makefile targets on macOS/Linux. On Windows (where `make` is not available by default), use the equivalent `go` commands listed above. The `.gocache` directory is managed automatically so cache paths stay consistent regardless of which method you use.
+- `make build` produces `bin/whale`; `make run` builds and launches the TUI. `BIN`, `GOCACHE_DIR`, `VERSION`, and `LDFLAGS` env vars control the output path, cache dir, and version injected into `internal/build.Version`.
+- `.gocache/` is a deliberate repo-local Go build cache; `make clean` removes `bin/` and `.gocache/` but refuses `GOCACHE_DIR` paths outside the repo.
+- `make test` runs `go test ./...` and already includes `internal/evals`; `make test-evals` is a focused subset for iteration, not an additional quality gate.
+- `make test-tui` covers only `./internal/tui` and `./internal/tui/render`.
+- `make test-windows` runs the curated Windows-only subset plus a build; use it on Windows.
+- CI runs `fmt-check`, then `vet`, then `test`, with a separate `test-windows` job (`.github/workflows/ci.yml`); match that order before pushing.
+- `make build-acp` builds `bin/whale-acp` with a plain `go build`.
+- `make bench-cost` stays offline; `make bench-cost-live` and the `real_*`/`mcp_tools` smoke scripts need a real `DEEPSEEK_API_KEY` (`scripts/smoke/local.sh` stays offline: Go suite plus mock deep-research E2E).
 
 ## Coding Style & Naming Conventions
 
@@ -31,7 +39,7 @@ Follow standard Go style: tabs for indentation, `gofmt` formatting, concise pack
 
 ## Testing Guidelines
 
-Tests use Go's `testing` package. Name tests `TestXxx` and keep them adjacent to the implementation. Prefer offline tests with temp dirs, fake providers, and deterministic fixtures; live network checks belong in `scripts/smoke/`. For user-visible CLI/TUI changes, add or update behavior-level tests, not just helper-unit coverage.
+Tests use Go's `testing` package. Name tests `TestXxx` and keep them adjacent to the implementation. Prefer offline tests with temp dirs, fake providers, and deterministic fixtures; live provider tests never run in normal builds — they are gated by the `livetest` build tag (`go test -tags livetest ...` with `DEEPSEEK_API_KEY`) or the `RUN_REAL_SMOKE=1` guard, and real network checks belong in `scripts/smoke/`. For user-visible CLI/TUI changes, add or update behavior-level tests, not just helper-unit coverage.
 
 ## Commit & Pull Request Guidelines
 
@@ -39,4 +47,4 @@ Recent history mixes short imperative subjects with scoped prefixes such as `fea
 
 ## Security & Configuration Tips
 
-Do not commit `~/.whale/` data, `./.whale/settings.json`, session logs, or API keys. Treat project hook config as untrusted input because hooks can execute shell commands.
+Do not commit `~/.whale/` data or project-local `.whale/` state: `config.local.toml`, session logs, usage data, credentials, or API keys (`.whale/config.toml` is the shared project config). Treat `.whale/config.toml` hook config as untrusted input because hooks execute shell commands.
