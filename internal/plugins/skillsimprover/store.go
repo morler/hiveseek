@@ -23,6 +23,26 @@ const (
 	maxProposalTextLen = 200000
 )
 
+// Rejection codes for skill write targets. Callers distinguish a refused write by
+// code instead of matching error text.
+const (
+	// RejectTargetOutsideProjectSkillRoots means the target is not inside the
+	// project-level `.whale/skills` or `.agents/skills` roots.
+	RejectTargetOutsideProjectSkillRoots = "target_outside_project_skill_roots"
+)
+
+// RejectError is a refused write target carrying a stable code.
+type RejectError struct {
+	Code   string
+	Reason string
+}
+
+func (e *RejectError) Error() string { return e.Code + ": " + e.Reason }
+
+func reject(code, format string, args ...any) error {
+	return &RejectError{Code: code, Reason: fmt.Sprintf(format, args...)}
+}
+
 type Store struct {
 	dataDir       string
 	workspaceRoot string
@@ -363,6 +383,9 @@ func requireKnownSkillPath(workspaceRoot, skillName, path string) error {
 	if err != nil {
 		return err
 	}
+	if err := requireInsideProjectSkillRoot(workspaceRoot, abs); err != nil {
+		return err
+	}
 	roots := skills.DefaultRoots(workspaceRoot)
 	found, ok := findSkillCaseInsensitive(roots, skillName)
 	if !ok {
@@ -376,6 +399,50 @@ func requireKnownSkillPath(workspaceRoot, skillName, path string) error {
 		return fmt.Errorf("target path does not match discovered skill path")
 	}
 	return nil
+}
+
+// projectSkillRoots returns the only two directories a write target may live in:
+// the project-level `.whale/skills` and `.agents/skills`. Home roots are read-only.
+func projectSkillRoots(workspaceRoot string) []string {
+	root := filepath.Clean(strings.TrimSpace(workspaceRoot))
+	if root == "" || root == "." {
+		return nil
+	}
+	dirs := []string{
+		filepath.Join(root, ".whale", "skills"),
+		filepath.Join(root, ".agents", "skills"),
+	}
+	for i, dir := range dirs {
+		dirs[i] = resolvePathLenient(dir)
+	}
+	return dirs
+}
+
+// requireInsideProjectSkillRoot rejects every target outside the project skill roots.
+func requireInsideProjectSkillRoot(workspaceRoot, target string) error {
+	roots := projectSkillRoots(workspaceRoot)
+	if len(roots) == 0 {
+		return reject(RejectTargetOutsideProjectSkillRoots, "workspace root is not configured")
+	}
+	for _, root := range roots {
+		rel, err := filepath.Rel(root, target)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil
+		}
+	}
+	return reject(RejectTargetOutsideProjectSkillRoots, "target %s is outside project skill roots %s", target, strings.Join(roots, ", "))
+}
+
+// resolvePathLenient resolves symlinks when it can and falls back to an absolute
+// cleaned path; it is used for roots that may not exist yet.
+func resolvePathLenient(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(path)
 }
 
 func findSkillCaseInsensitive(roots []string, skillName string) (*skills.Skill, bool) {

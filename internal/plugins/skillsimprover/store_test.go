@@ -1,6 +1,7 @@
 package skillsimprover
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -277,7 +278,12 @@ func TestStopHookSummarizesOnlyUnsummarizedEvidence(t *testing.T) {
 
 func writeTestSkill(t *testing.T, workspace, name, body string) string {
 	t.Helper()
-	dir := filepath.Join(workspace, ".whale", "skills", name)
+	return writeSkillAt(t, filepath.Join(workspace, ".whale", "skills"), name, body)
+}
+
+func writeSkillAt(t *testing.T, root, name, body string) string {
+	t.Helper()
+	dir := filepath.Join(root, name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -300,4 +306,61 @@ func countEvidenceKind(evs []Evidence, kind string) int {
 		}
 	}
 	return count
+}
+
+func TestWriteTargetRejectsPathsOutsideProjectSkillRoots(t *testing.T) {
+	workspace := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	homeSkill := writeSkillAt(t, filepath.Join(home, ".whale", "skills"), "demo", "old body")
+	looseDir := filepath.Join(workspace, "elsewhere")
+	if err := os.MkdirAll(looseDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	looseSkill := writeSkillAt(t, looseDir, "demo", "old body")
+	untracked := filepath.Join(workspace, ".whale", "skills", "not-a-skill", "README.md")
+	if err := os.MkdirAll(filepath.Dir(untracked), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(untracked, []byte("nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	save := func(target, name string) error {
+		t.Helper()
+		orig, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = store.SaveProposal(Proposal{
+			Skill:           name,
+			SkillFilePath:   target,
+			OriginalSHA256:  sha256Hex(orig),
+			Summary:         "change",
+			ProposedSkillMD: skillMarkdown(name, "new body"),
+		})
+		return err
+	}
+
+	for _, target := range []string{homeSkill, looseSkill} {
+		err := save(target, "demo")
+		var rejected *RejectError
+		if !errors.As(err, &rejected) || rejected.Code != RejectTargetOutsideProjectSkillRoots {
+			t.Fatalf("target %s: want code %s, got %v", target, RejectTargetOutsideProjectSkillRoots, err)
+		}
+	}
+
+	// Inside a project skill root but not the discovered skill: a plain error, not a rejection.
+	if err := save(untracked, "demo"); err == nil || errors.As(err, new(*RejectError)) {
+		t.Fatalf("path inside a root should fail discovery, not the root guard: %v", err)
+	}
+
+	// The other allowed project root still accepts writes.
+	agentsSkill := writeSkillAt(t, filepath.Join(workspace, ".agents", "skills"), "demo2", "old body")
+	if err := save(agentsSkill, "demo2"); err != nil {
+		t.Fatalf("write target under .agents/skills should be accepted: %v", err)
+	}
 }
