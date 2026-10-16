@@ -535,3 +535,26 @@ func TestSkillsImproverStaysOffUntilEnabled(t *testing.T) {
 		t.Fatalf("enabled skills-improver should be listed: %+v", on.Statuses())
 	}
 }
+
+func TestDisabledSkillsImproverRegistersNothing(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := t.TempDir()
+	off := NewManager(Context{DataDir: dataDir, WorkspaceRoot: workspace}, nil)
+
+	for _, s := range off.Skills() {
+		if s.Name == "skills-improver" {
+			t.Fatalf("disabled skills-improver should register no skill: %+v", s)
+		}
+	}
+	for _, tool := range off.Tools() {
+		if tool != nil && tool.Name() == "save_skill_proposal" {
+			t.Fatal("disabled skills-improver should register no tools")
+		}
+	}
+	if hooks := off.Hooks(); len(hooks) != 0 {
+		t.Fatalf("disabled skills-improver should register no hooks: %+v", hooks)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "plugins", "skills-improver", "data", "evidence.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("disabled skills-improver should write no evidence, stat err=%v", err)
+	}
+}
