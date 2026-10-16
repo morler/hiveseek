@@ -478,6 +478,8 @@ func TestRemoveRejectsCurrentWorktree(t *testing.T) {
 }
 
 func TestRemoveDoesNotForceDeleteUnmergedBranchByDefault(t *testing.T) {
+	// Git localizes its advice; pin a locale so the warning text is stable.
+	t.Setenv("LC_ALL", "C")
 	repo := newGitRepo(t)
 	sess, err := Start(repo, "unmerged")
 	if err != nil {
