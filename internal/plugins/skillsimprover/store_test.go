@@ -1,6 +1,7 @@
 package skillsimprover
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -362,5 +363,43 @@ func TestWriteTargetRejectsPathsOutsideProjectSkillRoots(t *testing.T) {
 	agentsSkill := writeSkillAt(t, filepath.Join(workspace, ".agents", "skills"), "demo2", "old body")
 	if err := save(agentsSkill, "demo2"); err != nil {
 		t.Fatalf("write target under .agents/skills should be accepted: %v", err)
+	}
+}
+func TestWriteTargetRejectsPluginSkillPath(t *testing.T) {
+	workspace := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "skills-improver")
+	store := NewStore(dataDir, workspace)
+
+	_, err := store.SaveProposal(Proposal{
+		Skill:           "demo",
+		SkillFilePath:   "plugin://skills-improver/SKILL.md",
+		OriginalSHA256:  sha256Hex([]byte("old body")),
+		Summary:         "change",
+		ProposedSkillMD: skillMarkdown("demo", "new body"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "plugin") {
+		t.Fatalf("save: want plugin target rejected, got %v", err)
+	}
+
+	// A hand-written proposal on disk must not reach the plugin path either.
+	dir := filepath.Join(dataDir, "proposals")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(Proposal{
+		ID:              "sp-plugin",
+		Skill:           "demo",
+		SkillFilePath:   "plugin://skills-improver/SKILL.md",
+		OriginalSHA256:  sha256Hex([]byte("old body")),
+		ProposedSkillMD: skillMarkdown("demo", "new body"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sp-plugin.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplyProposal("sp-plugin"); err == nil || !strings.Contains(err.Error(), "plugin") {
+		t.Fatalf("apply: want plugin target rejected, got %v", err)
 	}
 }
