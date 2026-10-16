@@ -38,7 +38,7 @@ func Run(ctx context.Context, cfg app.Config, start app.StartOptions, in io.Read
 	}
 
 	inputs := make(chan clientInput)
-	go scanClientMessages(in, inputs)
+	go scanClientMessages(ctx, in, inputs)
 	for {
 		select {
 		case ev := <-svc.Events():
@@ -95,8 +95,19 @@ type clientInput struct {
 	done bool
 }
 
-func scanClientMessages(in io.Reader, out chan<- clientInput) {
+func scanClientMessages(ctx context.Context, in io.Reader, out chan<- clientInput) {
 	defer close(out)
+	// send reports whether the input was delivered. A cancelled ctx means the
+	// app server is shutting down and nobody drains out any more, so the scan
+	// ends instead of blocking forever on one last send.
+	send := func(input clientInput) bool {
+		select {
+		case out <- input:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxClientMessageBytes)
 	for scanner.Scan() {
@@ -106,13 +117,17 @@ func scanClientMessages(in io.Reader, out chan<- clientInput) {
 		}
 		var msg protocol.ClientMessage
 		if err := json.Unmarshal(line, &msg); err != nil {
-			out <- clientInput{err: fmt.Errorf("decode client message: %w", err)}
+			if !send(clientInput{err: fmt.Errorf("decode client message: %w", err)}) {
+				return
+			}
 			continue
 		}
-		out <- clientInput{msg: msg}
+		if !send(clientInput{msg: msg}) {
+			return
+		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-		out <- clientInput{err: fmt.Errorf("read client message: %w", err)}
+		send(clientInput{err: fmt.Errorf("read client message: %w", err)})
 	}
-	out <- clientInput{done: true}
+	send(clientInput{done: true})
 }
