@@ -49,7 +49,7 @@ func Hooks(ctx Context) []agent.HookHandler {
 				if !ok {
 					return agent.HookResult{Decision: agent.HookDecisionPass}
 				}
-				_, _ = store.AppendEvidence(ev)
+				store.RecordEvidence(ev)
 				return agent.HookResult{Decision: agent.HookDecisionPass}
 			},
 		},
@@ -63,7 +63,7 @@ func Hooks(ctx Context) []agent.HookHandler {
 				if !ok {
 					return agent.HookResult{Decision: agent.HookDecisionPass}
 				}
-				_, _ = store.AppendEvidence(ev)
+				store.RecordEvidence(ev)
 				return agent.HookResult{Decision: agent.HookDecisionPass}
 			},
 		},

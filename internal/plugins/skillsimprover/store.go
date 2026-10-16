@@ -2,6 +2,7 @@ package skillsimprover
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/usewhale/whale/internal/securefs"
@@ -109,6 +111,40 @@ func (s *Store) restoreOriginalBytes(p Proposal) error {
 type Store struct {
 	dataDir       string
 	workspaceRoot string
+
+	// mu guards lastWriteErr, which keeps an evidence write failure visible in
+	// status instead of dropping it (M1-30).
+	mu           sync.Mutex
+	lastWriteErr error
+}
+
+func (s *Store) setWriteError(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastWriteErr = err
+}
+
+// EvidenceWriteError reports the last failed evidence append, if any.
+func (s *Store) EvidenceWriteError() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastWriteErr == nil {
+		return ""
+	}
+	return s.lastWriteErr.Error()
+}
+
+// RecordEvidence appends an evidence record for the hook path: a failure is
+// kept in the store status rather than discarded (M1-30).
+func (s *Store) RecordEvidence(ev Evidence) {
+	if !s.CollectionEnabled() {
+		return
+	}
+	if _, err := s.AppendEvidence(ev); err != nil {
+		s.setWriteError(err)
+		return
+	}
+	s.setWriteError(nil)
 }
 
 // Evidence is one minimized record of a skill improvement signal. This struct
@@ -164,6 +200,11 @@ type Status struct {
 	ProposalCount int
 	DataDir       string
 	Recent        []Evidence
+	// CollectionEnabled is false when the user turned evidence collection off.
+	CollectionEnabled bool
+	// WriteError holds the last failed evidence append, so a write failure is
+	// visible in status instead of being dropped (M1-30).
+	WriteError string
 }
 
 func NewStore(dataDir, workspaceRoot string) *Store {
@@ -225,6 +266,72 @@ func (s *Store) ListEvidence(skill string, limit int) ([]Evidence, error) {
 	return filtered, nil
 }
 
+// ClearEvidence removes every stored record, or only those for one skill, and
+// requires the caller to pass an explicit confirmation (M1-32).
+func (s *Store) ClearEvidence(skill string, confirmed bool) (int, error) {
+	if !confirmed {
+		return 0, fmt.Errorf("clearing evidence requires explicit confirmation")
+	}
+	all, err := s.readEvidence()
+	if err != nil {
+		return 0, err
+	}
+	skill = cleanSkillName(skill)
+	kept := make([]Evidence, 0, len(all))
+	removed := 0
+	for _, ev := range all {
+		if skill == "" || ev.Skill == skill {
+			removed++
+			continue
+		}
+		kept = append(kept, ev)
+	}
+	if removed == 0 {
+		return 0, nil
+	}
+	var buf bytes.Buffer
+	for _, ev := range kept {
+		b, err := json.Marshal(ev)
+		if err != nil {
+			return 0, err
+		}
+		buf.Write(append(b, '\n'))
+	}
+	if err := securefs.WritePrivateFile(s.evidencePath(), buf.Bytes()); err != nil {
+		return 0, fmt.Errorf("rewrite evidence log: %w", err)
+	}
+	return removed, nil
+}
+
+// collectionDisabledMarker is the file whose presence turns collection off.
+const collectionDisabledMarker = "collection.disabled"
+
+// CollectionEnabled reports whether new evidence is collected. Collection is on
+// unless the user turned it off (M1-33).
+func (s *Store) CollectionEnabled() bool {
+	if strings.TrimSpace(s.dataDir) == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(s.dataDir, collectionDisabledMarker))
+	return os.IsNotExist(err)
+}
+
+// SetCollectionEnabled turns collection on or off. The choice lives in the
+// private data dir, so it survives a restart (M1-33).
+func (s *Store) SetCollectionEnabled(enabled bool) error {
+	if strings.TrimSpace(s.dataDir) == "" {
+		return fmt.Errorf("skills-improver data dir is empty")
+	}
+	path := filepath.Join(s.dataDir, collectionDisabledMarker)
+	if enabled {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("resume evidence collection: %w", err)
+		}
+		return nil
+	}
+	return securefs.WritePrivateFile(path, []byte("collection disabled\n"))
+}
+
 func (s *Store) Status() (Status, error) {
 	all, err := s.readEvidence()
 	if err != nil {
@@ -239,7 +346,14 @@ func (s *Store) Status() (Status, error) {
 	if len(recent) > 5 {
 		recent = recent[:5]
 	}
-	return Status{EvidenceCount: len(all), ProposalCount: len(proposals), DataDir: s.dataDir, Recent: recent}, nil
+	return Status{
+		EvidenceCount:     len(all),
+		ProposalCount:     len(proposals),
+		DataDir:           s.dataDir,
+		Recent:            recent,
+		CollectionEnabled: s.CollectionEnabled(),
+		WriteError:        s.EvidenceWriteError(),
+	}, nil
 }
 
 func (s *Store) SaveProposal(p Proposal) (Proposal, error) {
