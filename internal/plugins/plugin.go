@@ -1306,7 +1306,7 @@ func classifySkillsImproverCommand(line string) CommandClass {
 	if len(fields) == 1 {
 		return CommandReadOnly
 	}
-	if len(fields) == 2 && fields[1] == "status" {
+	if len(fields) == 2 && (fields[1] == "status" || fields[1] == "proposals") {
 		return CommandReadOnly
 	}
 	return ""

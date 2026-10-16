@@ -24,7 +24,31 @@ func HandleCommand(store *Store, line string) (string, bool, error) {
 		out, err := statusText(store)
 		return out, false, err
 	}
+	if fields[1] == "proposals" {
+		if len(fields) > 2 {
+			return "", false, fmt.Errorf("usage: %s", CommandUsage)
+		}
+		out, err := proposalsText(store)
+		return out, false, err
+	}
 	return "", false, fmt.Errorf("usage: %s", CommandUsage)
+}
+
+func proposalsText(store *Store) (string, error) {
+	proposals, err := store.ListProposals()
+	if err != nil {
+		return "", err
+	}
+	if len(proposals) == 0 {
+		return "no proposals", nil
+	}
+	sort.SliceStable(proposals, func(i, j int) bool { return proposals[i].CreatedAt.After(proposals[j].CreatedAt) })
+	lines := make([]string, 0, len(proposals)+1)
+	lines = append(lines, fmt.Sprintf("%d proposal(s)", len(proposals)))
+	for _, p := range proposals {
+		lines = append(lines, fmt.Sprintf("  %s  %s  %s", p.ID, p.effectiveState(), p.Skill))
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 func statusText(store *Store) (string, error) {
