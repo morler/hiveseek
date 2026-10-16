@@ -17,10 +17,12 @@ import (
 )
 
 const (
-	PluginID           = "skills-improver"
-	evidenceFileName   = "evidence.jsonl"
-	maxEvidenceTextLen = 2000
-	maxProposalTextLen = 200000
+	PluginID         = "skills-improver"
+	evidenceFileName = "evidence.jsonl"
+	// maxEvidenceSummaryLen caps the one summary line an evidence record may
+	// carry: the shortest text that still says what went wrong.
+	maxEvidenceSummaryLen = 200
+	maxProposalTextLen    = 200000
 )
 
 // Proposal lifecycle states. A proposal without a state predates the state
@@ -108,19 +110,20 @@ type Store struct {
 	workspaceRoot string
 }
 
+// Evidence is one minimized record of a skill improvement signal. This struct
+// is the whole of what may reach disk: the skill, the failure code, the
+// shortest summary, the session it belongs to and the record id. User prompts,
+// tool arguments, tool results, model output, environment values and
+// credentials are never stored, so these fields are the privacy boundary
+// itself -- do not add one without revisiting that boundary.
 type Evidence struct {
-	ID                string         `json:"id"`
-	CreatedAt         time.Time      `json:"created_at"`
-	Kind              string         `json:"kind"`
-	SessionID         string         `json:"session_id,omitempty"`
-	Turn              int            `json:"turn,omitempty"`
-	Skill             string         `json:"skill,omitempty"`
-	Prompt            string         `json:"prompt,omitempty"`
-	ToolName          string         `json:"tool_name,omitempty"`
-	ToolArgsSummary   string         `json:"tool_args_summary,omitempty"`
-	ToolResultSummary string         `json:"tool_result_summary,omitempty"`
-	AssistantSummary  string         `json:"assistant_summary,omitempty"`
-	Metadata          map[string]any `json:"metadata,omitempty"`
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	Kind      string    `json:"kind"`
+	SessionID string    `json:"session_id,omitempty"`
+	Skill     string    `json:"skill,omitempty"`
+	ErrorCode string    `json:"error_code,omitempty"`
+	Summary   string    `json:"summary,omitempty"`
 }
 
 type Proposal struct {
@@ -180,10 +183,7 @@ func (s *Store) AppendEvidence(ev Evidence) (Evidence, error) {
 	ev.CreatedAt = time.Now().UTC()
 	ev.Kind = cleanToken(ev.Kind)
 	ev.Skill = cleanSkillName(ev.Skill)
-	ev.Prompt = truncate(ev.Prompt, maxEvidenceTextLen)
-	ev.ToolArgsSummary = truncate(ev.ToolArgsSummary, maxEvidenceTextLen)
-	ev.ToolResultSummary = truncate(ev.ToolResultSummary, maxEvidenceTextLen)
-	ev.AssistantSummary = truncate(ev.AssistantSummary, maxEvidenceTextLen)
+	ev.Summary = truncate(firstLine(ev.Summary), maxEvidenceSummaryLen)
 	if ev.ID == "" {
 		ev.ID = evidenceID(ev)
 	}
@@ -213,7 +213,7 @@ func (s *Store) ListEvidence(skill string, limit int) ([]Evidence, error) {
 	skill = cleanSkillName(skill)
 	filtered := make([]Evidence, 0, len(all))
 	for _, ev := range all {
-		if skill == "" || ev.Skill == skill || strings.Contains(strings.ToLower(ev.Prompt), strings.ToLower("$"+skill)) {
+		if skill == "" || ev.Skill == skill {
 			filtered = append(filtered, ev)
 		}
 	}
@@ -241,34 +241,6 @@ func (s *Store) Status() (Status, error) {
 	return Status{EvidenceCount: len(all), ProposalCount: len(proposals), DataDir: s.dataDir, Recent: recent}, nil
 }
 
-func (s *Store) LatestUnsummarizedSessionEvidence(sessionID string) (Evidence, bool) {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return Evidence{}, false
-	}
-	all, err := s.readEvidence()
-	if err != nil {
-		return Evidence{}, false
-	}
-	for i := len(all) - 1; i >= 0; i-- {
-		if all[i].SessionID != sessionID {
-			continue
-		}
-		if all[i].Kind == "turn-summary" {
-			return Evidence{}, false
-		}
-		if all[i].Kind != "" {
-			return all[i], true
-		}
-	}
-	return Evidence{}, false
-}
-
-func (s *Store) HasUnsummarizedSessionEvidence(sessionID string) bool {
-	_, ok := s.LatestUnsummarizedSessionEvidence(sessionID)
-	return ok
-}
-
 func (s *Store) SaveProposal(p Proposal) (Proposal, error) {
 	if strings.TrimSpace(s.dataDir) == "" {
 		return Proposal{}, fmt.Errorf("skills-improver data dir is empty")
@@ -276,8 +248,8 @@ func (s *Store) SaveProposal(p Proposal) (Proposal, error) {
 	p.ID = ""
 	p.Skill = strings.TrimSpace(p.Skill)
 	p.SkillFilePath = strings.TrimSpace(p.SkillFilePath)
-	p.Summary = truncate(p.Summary, maxEvidenceTextLen)
-	p.Risk = truncate(p.Risk, maxEvidenceTextLen)
+	p.Summary = truncate(p.Summary, maxProposalTextLen)
+	p.Risk = truncate(p.Risk, maxProposalTextLen)
 	p.ProposedSkillMD = strings.TrimSpace(p.ProposedSkillMD)
 	if p.Skill == "" {
 		return Proposal{}, fmt.Errorf("skill is required")
@@ -837,7 +809,7 @@ func normalizedExistingPath(path string) (string, error) {
 
 func evidenceID(ev Evidence) string {
 	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "%s\n%s\n%s\n%s\n%d\n", ev.CreatedAt.Format(time.RFC3339Nano), ev.Kind, ev.SessionID, ev.Skill, ev.Turn)
+	_, _ = fmt.Fprintf(h, "%s\n%s\n%s\n%s\n%s\n", ev.CreatedAt.Format(time.RFC3339Nano), ev.Kind, ev.SessionID, ev.Skill, ev.Summary)
 	return "ev-" + hex.EncodeToString(h.Sum(nil))[:12]
 }
 

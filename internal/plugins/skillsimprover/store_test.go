@@ -19,7 +19,7 @@ func TestStoreEvidenceAndProposalApply(t *testing.T) {
 	skillPath := writeTestSkill(t, workspace, "demo", "old body")
 	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
 
-	ev, err := store.AppendEvidence(Evidence{Kind: "user-feedback", SessionID: "s1", Skill: "demo", Prompt: "下次 $demo 要更具体"})
+	ev, err := store.AppendEvidence(Evidence{Kind: "user-feedback", SessionID: "s1", Skill: "demo", Summary: "下次 $demo 要更具体"})
 	if err != nil {
 		t.Fatalf("append evidence: %v", err)
 	}
@@ -234,55 +234,31 @@ func TestHooksCaptureFeedbackAndFailuresOnly(t *testing.T) {
 	}
 }
 
-func TestStopHookSummarizesOnlyUnsummarizedEvidence(t *testing.T) {
+// The stop hook has no minimized record to write: the assistant's answer is
+// model output and never lands on disk (M1-28).
+func TestStopHookPersistsNothing(t *testing.T) {
 	workspace := t.TempDir()
 	dataDir := filepath.Join(t.TempDir(), "skills-improver")
-	handlers := Hooks(Context{DataDir: dataDir, WorkspaceRoot: workspace})
 	runner := agent.NewHookRunner(nil, workspace)
-	runner.AddHandlers(handlers...)
+	runner.AddHandlers(Hooks(Context{DataDir: dataDir, WorkspaceRoot: workspace})...)
 	store := NewStore(dataDir, workspace)
 
 	_ = runner.RunHook(t.Context(), agent.NewUserPromptSubmitPayload("s1", workspace, "以后 $demo 要检查测试"))
-	_ = runner.RunHook(t.Context(), agent.NewStopPayload("s1", workspace, "first answer", 1))
+	_ = runner.RunHook(t.Context(), agent.NewStopPayload("s1", workspace, "assistant answer with sk-secret-token", 1))
+
 	evs, err := store.ListEvidence("", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if countEvidenceKind(evs, "turn-summary") != 1 {
-		t.Fatalf("expected one turn summary after evidence, got %+v", evs)
+	if len(evs) != 1 || evs[0].Kind != "user-feedback" {
+		t.Fatalf("stop hook should add nothing: %+v", evs)
 	}
-	summaries, err := store.ListEvidence("demo", 10)
+	raw, err := os.ReadFile(filepath.Join(dataDir, "evidence.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var linkedSummary Evidence
-	for _, ev := range summaries {
-		if ev.Kind == "turn-summary" {
-			linkedSummary = ev
-			break
-		}
-	}
-	if linkedSummary.Skill != "demo" || !strings.Contains(linkedSummary.Prompt, "$demo") || linkedSummary.Metadata["source_evidence_id"] == "" {
-		t.Fatalf("turn summary should preserve skill linkage, got %+v", linkedSummary)
-	}
-
-	_ = runner.RunHook(t.Context(), agent.NewStopPayload("s1", workspace, "unrelated later answer", 2))
-	evs, err = store.ListEvidence("", 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if countEvidenceKind(evs, "turn-summary") != 1 {
-		t.Fatalf("unrelated later stop should not append summary, got %+v", evs)
-	}
-
-	_ = runner.RunHook(t.Context(), agent.NewUserPromptSubmitPayload("s1", workspace, "下次 $demo 要更短"))
-	_ = runner.RunHook(t.Context(), agent.NewStopPayload("s1", workspace, "second answer", 3))
-	evs, err = store.ListEvidence("", 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if countEvidenceKind(evs, "turn-summary") != 2 {
-		t.Fatalf("new evidence should allow a new summary, got %+v", evs)
+	if strings.Contains(string(raw), "sk-secret-token") {
+		t.Fatalf("assistant output reached the evidence log: %s", raw)
 	}
 }
 
@@ -306,16 +282,6 @@ func writeSkillAt(t *testing.T, root, name, body string) string {
 
 func skillMarkdown(name, body string) string {
 	return "---\nname: " + name + "\ndescription: Demo skill\n---\n\n# Demo\n\n" + body + "\n"
-}
-
-func countEvidenceKind(evs []Evidence, kind string) int {
-	count := 0
-	for _, ev := range evs {
-		if ev.Kind == kind {
-			count++
-		}
-	}
-	return count
 }
 
 func TestWriteTargetRejectsPathsOutsideProjectSkillRoots(t *testing.T) {

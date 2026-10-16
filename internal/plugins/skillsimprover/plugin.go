@@ -67,30 +67,6 @@ func Hooks(ctx Context) []agent.HookHandler {
 				return agent.HookResult{Decision: agent.HookDecisionPass}
 			},
 		},
-		{
-			Event:       agent.HookEventStop,
-			Name:        "skills-improver.capture-turn-summary",
-			Source:      "plugin:skills-improver",
-			Description: "Attach the final assistant response to recent skill-improvement evidence.",
-			Run: func(_ context.Context, payload agent.HookPayload) agent.HookResult {
-				latest, ok := store.LatestUnsummarizedSessionEvidence(payload.SessionID)
-				if !ok {
-					return agent.HookResult{Decision: agent.HookDecisionPass}
-				}
-				_, _ = store.AppendEvidence(Evidence{
-					Kind:             "turn-summary",
-					SessionID:        payload.SessionID,
-					Turn:             payload.Turn,
-					Skill:            latest.Skill,
-					Prompt:           latest.Prompt,
-					AssistantSummary: payload.LastAssistantText,
-					Metadata: map[string]any{
-						"source_evidence_id": latest.ID,
-					},
-				})
-				return agent.HookResult{Decision: agent.HookDecisionPass}
-			},
-		},
 	}
 }
 
@@ -169,7 +145,9 @@ func promptEvidence(payload agent.HookPayload) (Evidence, bool) {
 		Kind:      "user-feedback",
 		SessionID: payload.SessionID,
 		Skill:     skill,
-		Prompt:    prompt,
+		// Only the first line is kept: the record says which skill the user
+		// asked to change and how, without storing the whole message (M1-26).
+		Summary: prompt,
 	}, true
 }
 
@@ -196,16 +174,14 @@ func toolFailureEvidence(payload agent.HookPayload) (Evidence, bool) {
 		msg = core.FirstNonEmpty(env.Error, env.Message, env.Code)
 		code = env.Code
 	}
+	// The failure code and one line of cause are the whole record: tool
+	// arguments, environment and any bulk output stay out of it (M1-26, M1-27).
 	return Evidence{
-		Kind:              "tool-failure",
-		SessionID:         payload.SessionID,
-		Skill:             skillFromToolArgs(payload.ToolArgs),
-		ToolName:          payload.ToolName,
-		ToolArgsSummary:   summarizeJSON(payload.ToolArgs),
-		ToolResultSummary: core.FirstNonEmpty(msg, result),
-		Metadata: map[string]any{
-			"code": code,
-		},
+		Kind:      "tool-failure",
+		SessionID: payload.SessionID,
+		Skill:     skillFromToolArgs(payload.ToolArgs),
+		ErrorCode: code,
+		Summary:   core.FirstNonEmpty(msg, result),
 	}, true
 }
 
