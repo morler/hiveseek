@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -183,7 +184,7 @@ func (s *Store) AppendEvidence(ev Evidence) (Evidence, error) {
 	ev.CreatedAt = time.Now().UTC()
 	ev.Kind = cleanToken(ev.Kind)
 	ev.Skill = cleanSkillName(ev.Skill)
-	ev.Summary = truncate(firstLine(ev.Summary), maxEvidenceSummaryLen)
+	ev.Summary = truncate(redactSecrets(firstLine(ev.Summary)), maxEvidenceSummaryLen)
 	if ev.ID == "" {
 		ev.ID = evidenceID(ev)
 	}
@@ -843,8 +844,24 @@ func cleanID(v string) string {
 	return cleanToken(v)
 }
 
+// secretPatterns are the credential shapes that would otherwise survive in a
+// summary line: provider keys, bearer tokens and key=value secrets.
+var secretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`sk-[A-Za-z0-9_\-]{8,}`),
+	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._\-]{8,}`),
+	regexp.MustCompile(`(?i)(api[_-]?key|token|password|secret)\s*[:=]\s*\S+`),
+}
+
+// redactSecrets must run before truncate: a cut-off secret still leaks its
+// prefix, so the text is scrubbed while it is whole (M1-29).
+func redactSecrets(v string) string {
+	for _, re := range secretPatterns {
+		v = re.ReplaceAllString(v, "[redacted]")
+	}
+	return v
+}
+
 func truncate(v string, max int) string {
-	v = strings.TrimSpace(v)
 	if max <= 0 || len([]rune(v)) <= max {
 		return v
 	}

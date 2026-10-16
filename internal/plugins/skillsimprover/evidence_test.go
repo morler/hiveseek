@@ -10,6 +10,55 @@ import (
 	"github.com/usewhale/whale/internal/agent"
 )
 
+// TestEvidenceRedactsSecretsBeforeTruncating pins the order: a secret is
+// scrubbed while it is whole, so a summary that is cut later cannot leak a
+// key prefix (M1-29).
+func TestEvidenceRedactsSecretsBeforeTruncating(t *testing.T) {
+	workspace := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "skills-improver")
+	store := NewStore(dataDir, workspace)
+
+	// The key sits inside the cap: it must be replaced, not kept.
+	inside, err := store.AppendEvidence(Evidence{
+		Kind: "tool-failure", SessionID: "s1", Skill: "demo",
+		Summary: "auth failed with sk-abcdefghijklmnop while calling the API",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(inside.Summary, "sk-abc") || !strings.Contains(inside.Summary, "[redacted]") {
+		t.Fatalf("secret inside the cap should be replaced, got %q", inside.Summary)
+	}
+
+	// A straddling secret must be redacted before the cut, or the truncation
+	// would leave a partial key behind.
+	straddle, err := store.AppendEvidence(Evidence{
+		Kind: "tool-failure", SessionID: "s1", Skill: "demo",
+		Summary: strings.Repeat("x", maxEvidenceSummaryLen-5) + "sk-abcdefghijkl",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(straddle.Summary, "sk-a") {
+		t.Fatalf("a straddling secret leaked its prefix: %q", straddle.Summary)
+	}
+	if len([]rune(straddle.Summary)) > maxEvidenceSummaryLen+len("...[truncated]") {
+		t.Fatalf("summary exceeds the cap: %d runes", len([]rune(straddle.Summary)))
+	}
+
+	// The same order applies to key=value credentials.
+	kv, err := store.AppendEvidence(Evidence{
+		Kind: "tool-failure", SessionID: "s1", Skill: "demo",
+		Summary: "env dump: token:ghp_abcdefghijklmno password=hunter2hunter2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(kv.Summary, "ghp_") || strings.Contains(kv.Summary, "hunter2") {
+		t.Fatalf("key=value secrets should be redacted, got %q", kv.Summary)
+	}
+}
+
 func TestToolFailureEvidencePrefersRenderedCause(t *testing.T) {
 	payload := agent.HookPayload{
 		Event:         agent.HookEventPostToolUse,
