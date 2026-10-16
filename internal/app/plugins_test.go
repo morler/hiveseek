@@ -476,11 +476,13 @@ func TestOfficialPluginCommands(t *testing.T) {
 	}
 	defer app.Close()
 
-	handled, out, _, err := app.HandleLocalCommand("/skills-improver proposals")
-	if err != nil || handled || strings.TrimSpace(out) != "" {
-		t.Fatalf("/skills-improver should not be exposed as a slash command: handled=%v out=%q err=%v", handled, out, err)
+	for _, line := range []string{"/skills-improver status", "/skills-improver proposals"} {
+		handled, out, _, err := app.HandleLocalCommand(line)
+		if err != nil || handled || strings.TrimSpace(out) != "" {
+			t.Fatalf("%s should not be exposed as a slash command: handled=%v out=%q err=%v", line, handled, out, err)
+		}
 	}
-	handled, out, _, err = app.HandleLocalCommand("/local-indexer rebuild")
+	handled, out, _, err := app.HandleLocalCommand("/local-indexer rebuild")
 	if err != nil {
 		t.Fatalf("/local-indexer rebuild err=%v", err)
 	}
@@ -818,5 +820,42 @@ func TestSessionGrantHasExactlyOneSource(t *testing.T) {
 	}
 	if len(writers) != 1 || writers[0] != "config_apply.go" {
 		t.Fatalf("the session grant must only be built in config_apply.go, got %v", writers)
+	}
+}
+
+// TestSkillsImproverStatusCommandFollowsEnablement pins M1-47: the command is
+// a plugin slash command, absent while the plugin is hidden, and it reports the
+// enable bit plus the evidence count once enabled.
+func TestSkillsImproverStatusCommandFollowsEnablement(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := t.TempDir()
+	enabled := true
+
+	hidden := plugins.NewManager(plugins.Context{DataDir: dataDir, WorkspaceRoot: workspace}, plugins.ConfigMap{"skills-improver": {Enabled: &enabled}})
+	if res, handled, err := hidden.HandleCommand(t.Context(), "/skills-improver status"); handled || err != nil {
+		t.Fatalf("hidden plugin must not handle the status command: handled=%v err=%v text=%q", handled, err, res.Text)
+	}
+	for _, name := range hidden.SlashCommandNames() {
+		if name == "/skills-improver" {
+			t.Fatal("hidden plugin must not advertise /skills-improver")
+		}
+	}
+
+	shown := plugins.NewManager(plugins.Context{
+		DataDir:       dataDir,
+		WorkspaceRoot: workspace,
+		UserGrants:    plugins.NewSessionGrants("skills-improver"),
+	}, plugins.ConfigMap{"skills-improver": {Enabled: &enabled}})
+	res, handled, err := shown.HandleCommand(t.Context(), "/skills-improver status")
+	if err != nil || !handled {
+		t.Fatalf("enabled plugin should handle the status command: handled=%v err=%v", handled, err)
+	}
+	for _, want := range []string{"skills-improver", "enabled: yes", "evidence: 0 record(s)", "proposals: 0", "collection: on", dataDir} {
+		if !strings.Contains(res.Text, want) {
+			t.Fatalf("status output missing %q:\n%s", want, res.Text)
+		}
+	}
+	if _, _, err := shown.HandleCommand(t.Context(), "/skills-improver nope"); err == nil {
+		t.Fatal("unknown subcommand should return the usage error")
 	}
 }

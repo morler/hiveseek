@@ -1259,6 +1259,7 @@ func (skillsImproverPlugin) Manifest() Manifest {
 			CapabilitySkills,
 			CapabilityTools,
 			CapabilityHooks,
+			CapabilitySlashCommands,
 			CapabilityStorage,
 		},
 		Permissions: []Permission{PermissionReadPluginData, PermissionWritePluginData, PermissionWriteWorkspace},
@@ -1282,4 +1283,31 @@ func (p skillsImproverPlugin) Tools(ctx Context) []core.Tool {
 
 func (p skillsImproverPlugin) Hooks(ctx Context) []agent.HookHandler {
 	return skillsimprover.Hooks(p.context(ctx))
+}
+
+func (p skillsImproverPlugin) SlashCommands(ctx Context) []SlashCommand {
+	return []SlashCommand{
+		{
+			Name:        "/" + skillsimprover.PluginID,
+			Usage:       skillsimprover.CommandUsage,
+			Description: "Inspect skill improvement proposals and evidence.",
+			Class:       CommandReadOnly,
+			Classify:    classifySkillsImproverCommand,
+			Run: func(_ context.Context, c Context, line string) (CommandResult, error) {
+				out, mutated, err := skillsimprover.HandleCommand(skillsimprover.StoreFor(p.context(c)), line)
+				return CommandResult{Text: out, Mutated: mutated}, err
+			},
+		},
+	}
+}
+
+func classifySkillsImproverCommand(line string) CommandClass {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) == 1 {
+		return CommandReadOnly
+	}
+	if len(fields) == 2 && fields[1] == "status" {
+		return CommandReadOnly
+	}
+	return ""
 }
