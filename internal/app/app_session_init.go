@@ -8,6 +8,7 @@ import (
 	whalemcp "github.com/usewhale/whale/internal/mcp"
 	"github.com/usewhale/whale/internal/plugins"
 	"github.com/usewhale/whale/internal/session"
+	"github.com/usewhale/whale/internal/skills"
 	"github.com/usewhale/whale/internal/store"
 	"github.com/usewhale/whale/internal/tools"
 	"github.com/usewhale/whale/internal/workflow"
@@ -30,6 +31,8 @@ type appToolInit struct {
 	pluginManager        *plugins.Manager
 	pluginTools          []core.Tool
 	pluginAgents         []plugins.AgentDefinition
+	subagentPluginSkills []*skills.Skill
+	subagentPluginAgents []plugins.AgentDefinition
 	baseTools            []core.Tool
 	baseToolRegistry     *core.ToolRegistry
 	subagentToolRegistry *core.ToolRegistry

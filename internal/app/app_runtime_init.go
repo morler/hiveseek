@@ -9,7 +9,6 @@ import (
 	"github.com/usewhale/whale/internal/defaults"
 	"github.com/usewhale/whale/internal/llm"
 	"github.com/usewhale/whale/internal/policy"
-	"github.com/usewhale/whale/internal/skills"
 	"github.com/usewhale/whale/internal/tasks"
 	"github.com/usewhale/whale/internal/tools"
 	"github.com/usewhale/whale/internal/workflow"
@@ -110,16 +109,15 @@ func initAppRuntime(cfg Config, sessionInit appSessionInit, toolInit appToolInit
 		}))
 		return core.NewToolRegistryChecked(toolset.Tools())
 	}
-	extraSkills := []*skills.Skill(nil)
-	if toolInit.pluginManager != nil {
-		extraSkills = toolInit.pluginManager.Skills()
-	}
+	// Tasks, workflow agents and subagents run without the session capability,
+	// so they only ever see plugin skills that need no grant (M1-44).
+	extraSkills := toolInit.subagentPluginSkills
 	taskRunner := tasks.NewRunner(tasks.RunnerConfig{
 		ProviderFactory:            providerFactory,
 		ProviderFactoryWithOptions: providerFactoryWithOptions,
 		ParentTools:                toolInit.subagentToolRegistry,
 		WorkspaceTools:             workspaceTools,
-		AgentDefinitions:           tasks.NewAgentDefinitionLibraryWithDefinitions(workspaceRoot, taskAgentDefinitions(toolInit.pluginAgents)),
+		AgentDefinitions:           tasks.NewAgentDefinitionLibraryWithDefinitions(workspaceRoot, taskAgentDefinitions(toolInit.subagentPluginAgents)),
 		ParentPolicy:               policy.RulePolicy{Default: cfg.PermissionDefault, Rules: append([]policy.PermissionRule{}, cfg.PermissionRules...), WorkspaceRoot: workspaceRoot, WorktreeRoot: worktreeRoot},
 		MessageStore:               sessionInit.msgStore,
 		SessionsDir:                sessionInit.sessionsDir,

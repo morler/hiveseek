@@ -585,3 +585,37 @@ func TestDisabledSkillsImproverRegistersNothing(t *testing.T) {
 		t.Fatalf("disabled skills-improver should write no evidence, stat err=%v", err)
 	}
 }
+
+// TestSkillsImproverRegistersNoApplyOrRestoreTool pins M1-46: apply and
+// restore stay user commands, the agent never gets a tool for them.
+func TestSkillsImproverRegistersNoApplyOrRestoreTool(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := t.TempDir()
+	enabled := true
+	mgr := NewManager(Context{
+		DataDir:       dataDir,
+		WorkspaceRoot: workspace,
+		UserGrants:    NewSessionGrants("skills-improver"),
+	}, ConfigMap{"skills-improver": {Enabled: &enabled}})
+
+	for _, plugin := range []string{"skills-improver", "memory"} {
+		for _, tool := range mgr.Tools() {
+			if tool == nil {
+				continue
+			}
+			name := strings.ToLower(tool.Name())
+			if strings.Contains(name, "apply") || strings.Contains(name, "restore") {
+				t.Fatalf("plugin %s must not expose %q as a tool", plugin, tool.Name())
+			}
+		}
+	}
+	found := false
+	for _, tool := range mgr.Tools() {
+		if tool != nil && tool.Name() == "save_skill_proposal" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("enabled skills-improver should still expose its proposal tool")
+	}
+}

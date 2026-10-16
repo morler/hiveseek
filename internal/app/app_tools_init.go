@@ -41,6 +41,13 @@ func initAppTools(cfg Config, start StartOptions, workspaceRoot string) (appTool
 	mergePluginMCPServers(&mcpConfig, pluginOutcome.MCPServers)
 	mcpManager := whalemcp.NewManager(mcpConfig, workspaceRoot)
 	pluginTools := pluginOutcome.Tools
+	// Subagents, workflow agents and ACP connections never inherit the session
+	// capability: they resolve the same plugin config without any user grant,
+	// so a default-disabled plugin contributes nothing to them (M1-44).
+	subagentPluginOutcome := plugins.NewManager(plugins.Context{
+		DataDir:       cfg.DataDir,
+		WorkspaceRoot: workspaceRoot,
+	}, cfg.Plugins).Outcome()
 	toolset.SetExtraSkills(pluginOutcome.Skills)
 	var lspMgr *lsp.Manager
 	// LSP is off by default; enable via /lsp on or [lsp] enabled = true.
@@ -61,7 +68,7 @@ func initAppTools(cfg Config, start StartOptions, workspaceRoot string) (appTool
 		return appToolInit{}, fmt.Errorf("init base tool registry failed: %w", err)
 	}
 	subagentTools := append([]core.Tool{}, baseTools...)
-	subagentTools = append(subagentTools, pluginTools...)
+	subagentTools = append(subagentTools, subagentPluginOutcome.Tools...)
 	subagentToolRegistry, err := core.NewToolRegistryChecked(subagentTools)
 	if err != nil {
 		return appToolInit{}, fmt.Errorf("init subagent tool registry failed: %w", err)
@@ -85,6 +92,8 @@ func initAppTools(cfg Config, start StartOptions, workspaceRoot string) (appTool
 		pluginManager:        pluginManager,
 		pluginTools:          pluginTools,
 		pluginAgents:         pluginOutcome.Agents,
+		subagentPluginAgents: subagentPluginOutcome.Agents,
+		subagentPluginSkills: subagentPluginOutcome.Skills,
 		baseTools:            baseTools,
 		baseToolRegistry:     baseToolRegistry,
 		subagentToolRegistry: subagentToolRegistry,

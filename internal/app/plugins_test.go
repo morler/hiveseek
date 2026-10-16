@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/usewhale/whale/internal/agent"
+	"github.com/usewhale/whale/internal/core"
 	whalemcp "github.com/usewhale/whale/internal/mcp"
 	"github.com/usewhale/whale/internal/plugins"
 	"github.com/usewhale/whale/internal/plugins/memoryplugin"
@@ -702,5 +703,120 @@ func writeGlobalConfig(t *testing.T, dataDir, body string) {
 	t.Helper()
 	if err := os.WriteFile(GlobalConfigPath(dataDir), []byte(body), 0o600); err != nil {
 		t.Fatalf("write global config: %v", err)
+	}
+}
+
+// TestSubagentAndWorkflowAgentsDoNotInheritSkillsImproverGrant covers the two
+// in-process spawn paths: subagents and workflow agents both take their tools
+// and skills from the grant-less plugin resolution, while the interactive
+// session keeps the granted one (M1-44).
+func TestSubagentAndWorkflowAgentsDoNotInheritSkillsImproverGrant(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.DataDir = t.TempDir()
+	workspace := t.TempDir()
+	writeGlobalConfig(t, cfg.DataDir, "[plugins.skills-improver]\nenabled = true\n")
+	cfg.Plugins = plugins.ConfigMap{"skills-improver": {Enabled: boolPtr(true)}}
+	cfg.UserGrants = plugins.NewSessionGrants("skills-improver")
+
+	init, err := initAppTools(cfg, StartOptions{}, workspace)
+	if err != nil {
+		t.Fatalf("initAppTools: %v", err)
+	}
+
+	// The interactive session holds the capability and registers the tool.
+	if got := init.pluginManager.Outcome().Tools; !hasToolNamed(got, "save_skill_proposal") {
+		t.Fatalf("interactive session should register save_skill_proposal: %v", toolNames(got))
+	}
+	// Subagents and workflow agents do not: same registry, no grant.
+	if init.subagentToolRegistry.Get("save_skill_proposal") != nil {
+		t.Fatal("subagent registry must not inherit save_skill_proposal")
+	}
+	for _, skill := range init.subagentPluginSkills {
+		if skill.Name == "skills-improver" {
+			t.Fatal("subagent skill set must not inherit the skills-improver skill")
+		}
+	}
+	for _, definition := range init.subagentPluginAgents {
+		if strings.Contains(definition.Name, "skills-improver") {
+			t.Fatalf("subagent agent set must not inherit %q", definition.Name)
+		}
+	}
+}
+
+func hasToolNamed(tools []core.Tool, name string) bool {
+	for _, tool := range tools {
+		if tool != nil && tool.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
+func toolNames(tools []core.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if tool != nil {
+			names = append(names, tool.Name())
+		}
+	}
+	return names
+}
+
+// TestDangerouslySkipPermissionsCannotGrantSkillsImprover pins M1-45: the
+// bypass flag only relaxes permission prompts, it never becomes the session
+// grant or the confirmation an apply/restore needs.
+func TestDangerouslySkipPermissionsCannotGrantSkillsImprover(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.DataDir = t.TempDir()
+	workspace := t.TempDir()
+
+	// Exactly what --dangerously-skip-permissions does in the CLI.
+	cfg.PermissionDefault = "allow"
+	cfg.AutoAcceptPermissions = true
+	cfg.Plugins = plugins.ConfigMap{"skills-improver": {Enabled: boolPtr(true)}}
+
+	manager := plugins.NewManager(plugins.Context{
+		DataDir:       cfg.DataDir,
+		WorkspaceRoot: workspace,
+		UserGrants:    cfg.UserGrants,
+	}, cfg.Plugins)
+	if st, ok := manager.Status("skills-improver"); !ok || st.Enabled {
+		t.Fatalf("bypass flag must not enable skills-improver: ok=%v status=%+v", ok, st)
+	}
+	for _, tool := range manager.Outcome().Tools {
+		if tool != nil && tool.Name() == "save_skill_proposal" {
+			t.Fatal("bypass flag must not register the proposal tool")
+		}
+	}
+}
+
+// TestSessionGrantHasExactlyOneSource blocks a future edit from deriving the
+// capability from permission state or from the merged plugin config (M1-41).
+func TestSessionGrantHasExactlyOneSource(t *testing.T) {
+	entries, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	writers := []string{}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(entry)
+		if err != nil {
+			t.Fatalf("read %s: %v", entry, err)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") {
+				continue
+			}
+			if strings.Contains(trimmed, ".UserGrants =") {
+				writers = append(writers, entry)
+			}
+		}
+	}
+	if len(writers) != 1 || writers[0] != "config_apply.go" {
+		t.Fatalf("the session grant must only be built in config_apply.go, got %v", writers)
 	}
 }

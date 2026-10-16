@@ -781,3 +781,17 @@ func TestWireMCPServersNegativeCacheConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestACPToolRegistryHasNoPluginTools pins the ACP connection to the plugin
+// capability it is allowed to have: none. ACP builds its toolset directly and
+// never loads plugins, so a default-disabled plugin cannot reach it (M1-44).
+func TestACPToolRegistryHasNoPluginTools(t *testing.T) {
+	ts, err := tools.NewToolset(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, reg := wireMCPServers(ts, t.TempDir(), t.TempDir(), nil)
+	if reg.Get("save_skill_proposal") != nil {
+		t.Fatal("ACP must not inherit plugin tools")
+	}
+}
