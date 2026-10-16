@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/usewhale/whale/internal/agent"
@@ -1081,5 +1082,138 @@ func TestUnusableInputsAreRefusedWithCodes(t *testing.T) {
 	}
 	if _, err := store.ListEvidence("", 5); rejectCode(err) != RejectLogDamaged {
 		t.Fatalf("want %s, got %v", RejectLogDamaged, err)
+	}
+}
+func TestSaveProposalRejectsOversizedSkillContent(t *testing.T) {
+	workspace := t.TempDir()
+	skillPath := writeTestSkill(t, workspace, "demo", "old body")
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	orig, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := store.SaveProposal(Proposal{
+		Skill:           "demo",
+		SkillFilePath:   skillPath,
+		OriginalSHA256:  sha256Hex(orig),
+		Summary:         "change",
+		ProposedSkillMD: skillMarkdown("demo", strings.Repeat("x", maxProposalTextLen+1)),
+	})
+	if err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("want an oversized proposal to be rejected, got %v", err)
+	}
+	if p.ID != "" {
+		t.Fatalf("a rejected proposal must not be persisted: %+v", p)
+	}
+	if got, _ := os.ReadFile(skillPath); string(got) != string(orig) {
+		t.Fatalf("target skill was touched: %q", got)
+	}
+	if proposals, _ := store.ListProposals(); len(proposals) != 0 {
+		t.Fatalf("want no stored proposals, got %d", len(proposals))
+	}
+}
+
+func TestApplyProposalRecoversWhenTheStateWriteFails(t *testing.T) {
+	workspace := t.TempDir()
+	skillPath := writeTestSkill(t, workspace, "demo", "old body")
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	orig, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := store.SaveProposal(Proposal{
+		Skill:           "demo",
+		SkillFilePath:   skillPath,
+		OriginalSHA256:  sha256Hex(orig),
+		Summary:         "change",
+		ProposedSkillMD: skillMarkdown("demo", "new body"),
+	})
+	if err != nil {
+		t.Fatalf("save proposal: %v", err)
+	}
+	// The applied log is the last state write. Fail it once: the target is
+	// already replaced, so the proposal must stay recoverable, not silent.
+	origWrite := writeProposalFile
+	t.Cleanup(func() { writeProposalFile = origWrite })
+	writes := 0
+	writeProposalFile = func(path string, data []byte) error {
+		writes++
+		if writes == 2 {
+			return errors.New("injected state write failure")
+		}
+		return origWrite(path, data)
+	}
+	if _, err := store.ApplyProposal(p.ID); err == nil {
+		t.Fatal("want the failed state write to be reported")
+	}
+	writeProposalFile = origWrite
+	stuck, err := store.ReadProposal(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stuck.effectiveState() != StateApplying {
+		t.Fatalf("state = %q, want the intermediary %q", stuck.effectiveState(), StateApplying)
+	}
+	if got, _ := os.ReadFile(skillPath); string(got) == string(orig) {
+		t.Fatal("the target should already carry the proposed bytes")
+	}
+	// The next entry settles the transaction from the recorded hashes alone.
+	recovered, err := store.ApplyProposal(p.ID)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if recovered.State != StateApplied {
+		t.Fatalf("state = %q, want %q", recovered.State, StateApplied)
+	}
+	proposed := strings.TrimSpace(skillMarkdown("demo", "new body")) + "\n"
+	if got, _ := os.ReadFile(skillPath); string(got) != proposed {
+		t.Fatalf("target = %q, want the proposed bytes", got)
+	}
+}
+
+func TestApplyProposalRollsBackWhenTheTargetWriteFails(t *testing.T) {
+	workspace := t.TempDir()
+	skillPath := writeTestSkill(t, workspace, "demo", "old body")
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	orig, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := store.SaveProposal(Proposal{
+		Skill:           "demo",
+		SkillFilePath:   skillPath,
+		OriginalSHA256:  sha256Hex(orig),
+		Summary:         "change",
+		ProposedSkillMD: skillMarkdown("demo", "new body"),
+	})
+	if err != nil {
+		t.Fatalf("save proposal: %v", err)
+	}
+	// A full disk fails the flush of the replacement.
+	origSync := atomicWriteSync
+	t.Cleanup(func() { atomicWriteSync = origSync })
+	atomicWriteSync = func(*os.File) error { return syscall.ENOSPC }
+	if _, err := store.ApplyProposal(p.ID); err == nil {
+		t.Fatal("want the failed target write to be reported")
+	}
+	atomicWriteSync = origSync
+	if got, _ := os.ReadFile(skillPath); string(got) != string(orig) {
+		t.Fatalf("a failed target write must leave the skill in place, got %q", got)
+	}
+	// Nothing changed, so the next entry reports that and keeps the original
+	// recoverable from the private backup.
+	recovered, err := store.ApplyProposal(p.ID)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if recovered.State != StateRestored {
+		t.Fatalf("state = %q, want %q", recovered.State, StateRestored)
+	}
+	backup, err := os.ReadFile(recovered.OriginalBackupPath)
+	if err != nil {
+		t.Fatalf("original backup is not readable: %v", err)
+	}
+	if string(backup) != string(orig) {
+		t.Fatalf("backup = %q, want the original bytes", backup)
 	}
 }

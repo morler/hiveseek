@@ -623,7 +623,7 @@ func (s *Store) writeProposal(p Proposal) error {
 	if err != nil {
 		return err
 	}
-	return securefs.WritePrivateFile(filepath.Join(s.proposalsDir(), p.ID+".json"), append(b, '\n'))
+	return writeProposalFile(filepath.Join(s.proposalsDir(), p.ID+".json"), append(b, '\n'))
 }
 
 func (s *Store) backupsDir() string {
@@ -824,10 +824,12 @@ func requireRegularFile(path string) error {
 	return nil
 }
 
-// Seams so the unit test can assert fsync lands before the rename.
+// Seams so the unit test can assert fsync lands before the rename, and can
+// fail the proposal-log write after the target was already replaced.
 var (
 	atomicWriteSync   = func(f *os.File) error { return f.Sync() }
 	atomicWriteRename = os.Rename
+	writeProposalFile = securefs.WritePrivateFile
 )
 
 // writeFileAtomic replaces path with data through a temp file in the same
