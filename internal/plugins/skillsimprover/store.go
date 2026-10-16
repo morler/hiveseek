@@ -23,6 +23,14 @@ const (
 	maxProposalTextLen = 200000
 )
 
+// Proposal lifecycle states. A proposal without a state predates the state
+// machine: its applied_at timestamp decides, so old files keep their meaning.
+const (
+	StateProposed = "proposed"
+	StateApplying = "applying"
+	StateApplied  = "applied"
+)
+
 // Rejection codes for skill write targets. Callers distinguish a refused write by
 // code instead of matching error text.
 const (
@@ -83,6 +91,19 @@ type Proposal struct {
 	EvidenceIDs        []string  `json:"evidence_ids,omitempty"`
 	AppliedAt          time.Time `json:"applied_at,omitempty"`
 	AppliedSkillSHA256 string    `json:"applied_skill_sha256,omitempty"`
+	State              string    `json:"state,omitempty"`
+}
+
+// effectiveState resolves the state of a proposal written before the state
+// machine existed: no state plus an applied timestamp means applied.
+func (p Proposal) effectiveState() string {
+	if p.State != "" {
+		return p.State
+	}
+	if !p.AppliedAt.IsZero() {
+		return StateApplied
+	}
+	return StateProposed
 }
 
 type Status struct {
@@ -248,15 +269,8 @@ func (s *Store) SaveProposal(p Proposal) (Proposal, error) {
 	p.SkillFilePath = abs
 	p.CreatedAt = time.Now().UTC()
 	p.ID = proposalID(p)
-	if err := securefs.MkdirPrivate(s.proposalsDir()); err != nil {
-		return Proposal{}, fmt.Errorf("create proposals dir: %w", err)
-	}
-	b, err := json.MarshalIndent(p, "", "  ")
-	if err != nil {
-		return Proposal{}, err
-	}
-	path := filepath.Join(s.proposalsDir(), p.ID+".json")
-	if err := securefs.WritePrivateFile(path, append(b, '\n')); err != nil {
+	p.State = StateProposed
+	if err := s.writeProposal(p); err != nil {
 		return Proposal{}, fmt.Errorf("write proposal: %w", err)
 	}
 	return p, nil
@@ -306,8 +320,8 @@ func (s *Store) ApplyProposal(id string) (Proposal, error) {
 	if err != nil {
 		return Proposal{}, err
 	}
-	if !p.AppliedAt.IsZero() {
-		return Proposal{}, fmt.Errorf("proposal already applied")
+	if state := p.effectiveState(); state != StateProposed {
+		return Proposal{}, fmt.Errorf("proposal is %s, not proposed", state)
 	}
 	if strings.HasPrefix(p.SkillFilePath, "plugin://") {
 		return Proposal{}, fmt.Errorf("plugin skills cannot be applied in phase 1")
@@ -326,22 +340,23 @@ func (s *Store) ApplyProposal(id string) (Proposal, error) {
 		return Proposal{}, fmt.Errorf("target skill changed: sha mismatch")
 	}
 	// The backup lands before the target is replaced; if it cannot be written
-	// the target is left untouched.
-	backupPath, err := s.writeOriginalBackup(current)
-	if err != nil {
+	// the target is left untouched. The applying state is committed first so a
+	// crash mid-replace leaves an identifiable intermediate state on disk.
+	if err := s.writeOriginalBackupInto(&p, current); err != nil {
 		return Proposal{}, err
 	}
-	p.OriginalBackupPath = backupPath
+	p.State = StateApplying
+	if err := s.writeProposal(p); err != nil {
+		return Proposal{}, fmt.Errorf("mark proposal applying: %w", err)
+	}
 	if err := writeFileAtomic(p.SkillFilePath, []byte(strings.TrimSpace(p.ProposedSkillMD)+"\n")); err != nil {
 		return Proposal{}, fmt.Errorf("write target skill: %w", err)
 	}
+	// The applied log is committed last.
+	p.State = StateApplied
 	p.AppliedAt = time.Now().UTC()
 	p.AppliedSkillSHA256 = sha256Hex([]byte(strings.TrimSpace(p.ProposedSkillMD) + "\n"))
-	b, err := json.MarshalIndent(p, "", "  ")
-	if err != nil {
-		return Proposal{}, err
-	}
-	if err := securefs.WritePrivateFile(filepath.Join(s.proposalsDir(), p.ID+".json"), append(b, '\n')); err != nil {
+	if err := s.writeProposal(p); err != nil {
 		return Proposal{}, fmt.Errorf("mark proposal applied: %w", err)
 	}
 	return p, nil
@@ -379,26 +394,36 @@ func (s *Store) proposalsDir() string {
 	return filepath.Join(s.dataDir, "proposals")
 }
 
+func (s *Store) writeProposal(p Proposal) error {
+	if err := securefs.MkdirPrivate(s.proposalsDir()); err != nil {
+		return fmt.Errorf("create proposals dir: %w", err)
+	}
+	b, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return err
+	}
+	return securefs.WritePrivateFile(filepath.Join(s.proposalsDir(), p.ID+".json"), append(b, '\n'))
+}
+
 func (s *Store) backupsDir() string {
 	return filepath.Join(s.dataDir, "backups")
 }
 
-// writeOriginalBackup stores the skill bytes read at apply time, named by their
-// sha256, so the exact original is recoverable before the target is replaced.
-// Content addressed, so a retry after a failed apply does not rewrite it.
-func (s *Store) writeOriginalBackup(content []byte) (string, error) {
+// writeOriginalBackupInto stores the skill bytes read at apply time, named by
+// their sha256, so the exact original is recoverable before the target is
+// replaced. Content addressed: a retry after a failed apply does not rewrite it.
+func (s *Store) writeOriginalBackupInto(p *Proposal, content []byte) error {
 	if err := securefs.MkdirPrivate(s.backupsDir()); err != nil {
-		return "", fmt.Errorf("create backups dir: %w", err)
+		return fmt.Errorf("create backups dir: %w", err)
 	}
-	name := "sha256-" + sha256Hex(content) + ".md"
-	path := filepath.Join(s.backupsDir(), name)
-	if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() {
-		return path, nil
+	path := filepath.Join(s.backupsDir(), "sha256-"+sha256Hex(content)+".md")
+	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() {
+		if err := securefs.WritePrivateFile(path, content); err != nil {
+			return fmt.Errorf("write original backup: %w", err)
+		}
 	}
-	if err := securefs.WritePrivateFile(path, content); err != nil {
-		return "", fmt.Errorf("write original backup: %w", err)
-	}
-	return path, nil
+	p.OriginalBackupPath = path
+	return nil
 }
 
 func validateSkillContent(expectedName, content string) error {

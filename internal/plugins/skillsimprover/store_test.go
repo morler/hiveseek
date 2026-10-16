@@ -5,11 +5,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/usewhale/whale/internal/agent"
 	"github.com/usewhale/whale/internal/core"
+	"github.com/usewhale/whale/internal/securefs"
 )
 
 func TestStoreEvidenceAndProposalApply(t *testing.T) {
@@ -686,5 +688,105 @@ func TestApplyProposalKeepsOriginalBackupBeforeReplace(t *testing.T) {
 	}
 	if string(untouched) != string(current) {
 		t.Fatalf("target must be untouched when the backup fails, got %q", string(untouched))
+	}
+}
+func TestApplyProposalAdvancesStateAndKeepsAppliedLast(t *testing.T) {
+	workspace := t.TempDir()
+	skillPath := writeTestSkill(t, workspace, "demo", "old body")
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	orig, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := store.SaveProposal(Proposal{
+		Skill:           "demo",
+		SkillFilePath:   skillPath,
+		OriginalSHA256:  sha256Hex(orig),
+		Summary:         "change",
+		ProposedSkillMD: skillMarkdown("demo", "new body"),
+	})
+	if err != nil {
+		t.Fatalf("save proposal: %v", err)
+	}
+	if p.State != StateProposed {
+		t.Fatalf("saved proposal state = %q, want %q", p.State, StateProposed)
+	}
+	onDisk, err := store.ReadProposal(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onDisk.State != StateProposed {
+		t.Fatalf("on-disk state = %q, want %q", onDisk.State, StateProposed)
+	}
+
+	// While the target is being replaced, the state on disk must already read
+	// applying, so a crash there is identifiable rather than looking applied.
+	var duringReplace string
+	origRename := atomicWriteRename
+	t.Cleanup(func() { atomicWriteRename = origRename })
+	atomicWriteRename = func(oldpath, newpath string) error {
+		if during, err := store.ReadProposal(p.ID); err == nil {
+			duringReplace = during.State
+		}
+		return origRename(oldpath, newpath)
+	}
+	applied, err := store.ApplyProposal(p.ID)
+	if err != nil {
+		t.Fatalf("apply proposal: %v", err)
+	}
+	if duringReplace != StateApplying {
+		t.Fatalf("state during replace = %q, want %q", duringReplace, StateApplying)
+	}
+	if applied.State != StateApplied || applied.AppliedAt.IsZero() {
+		t.Fatalf("applied proposal state = %q at zero=%v", applied.State, applied.AppliedAt.IsZero())
+	}
+	final, err := store.ReadProposal(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != StateApplied {
+		t.Fatalf("final on-disk state = %q, want %q", final.State, StateApplied)
+	}
+	if _, err := store.ApplyProposal(p.ID); err == nil {
+		t.Fatal("an applied proposal must not apply twice")
+	}
+}
+
+func TestProposalStateDefaultsForOlderFiles(t *testing.T) {
+	workspace := t.TempDir()
+	skillPath := writeTestSkill(t, workspace, "demo", "old body")
+	dataDir := filepath.Join(t.TempDir(), "skills-improver")
+	store := NewStore(dataDir, workspace)
+	if err := securefs.MkdirPrivate(store.proposalsDir()); err != nil {
+		t.Fatal(err)
+	}
+	// A proposal written before the state machine: applied_at decides.
+	appliedJSON := `{"id":"sp-legacy","skill":"demo","skill_file_path":` + strconv.Quote(skillPath) +
+		`,"summary":"legacy","proposed_skill_md":"x","applied_at":"2026-01-02T03:04:05Z"}`
+	if err := securefs.WritePrivateFile(filepath.Join(store.proposalsDir(), "sp-legacy.json"), []byte(appliedJSON)); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := store.ReadProposal("sp-legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := legacy.effectiveState(); got != StateApplied {
+		t.Fatalf("legacy applied proposal state = %q, want %q", got, StateApplied)
+	}
+	if _, err := store.ApplyProposal("sp-legacy"); err == nil {
+		t.Fatal("a legacy applied proposal must not apply again")
+	}
+
+	proposedJSON := `{"id":"sp-legacy-open","skill":"demo","skill_file_path":` + strconv.Quote(skillPath) +
+		`,"original_sha256":"` + sha256Hex([]byte("old body")) + `","summary":"legacy open","proposed_skill_md":"x"}`
+	if err := securefs.WritePrivateFile(filepath.Join(store.proposalsDir(), "sp-legacy-open.json"), []byte(proposedJSON)); err != nil {
+		t.Fatal(err)
+	}
+	open, err := store.ReadProposal("sp-legacy-open")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := open.effectiveState(); got != StateProposed {
+		t.Fatalf("legacy open proposal state = %q, want %q", got, StateProposed)
 	}
 }
