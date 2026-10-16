@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,6 +17,10 @@ import (
 )
 
 func ApplyLoadedConfig(cfg *Config, loaded LoadedConfig) error {
+	// The session capability comes from the user-level config alone, captured
+	// before the project layers merge in, so a project config can tighten it
+	// but never grant it (plan §4.2, M1-40/M1-41).
+	cfg.UserGrants = plugins.NewSessionGrants(userGrantedPlugins(loaded.Global.Plugins)...)
 	if err := ApplyFileConfig(cfg, loaded.Global); err != nil {
 		return err
 	}
@@ -26,6 +31,23 @@ func ApplyLoadedConfig(cfg *Config, loaded LoadedConfig) error {
 		return err
 	}
 	return nil
+}
+
+// userGrantedPlugins lists the plugin IDs the user enabled in the user-level
+// config file. It reads the file layer directly, so the grant is captured
+// before project config merges into cfg.Plugins.
+func userGrantedPlugins(global FilePluginsConfig) []string {
+	if len(global) == 0 {
+		return nil
+	}
+	granted := make([]string, 0, len(global))
+	for id, pluginConfig := range global {
+		if pluginConfig.Enabled != nil && *pluginConfig.Enabled {
+			granted = append(granted, id)
+		}
+	}
+	sort.Strings(granted)
+	return granted
 }
 
 func ApplyFileConfig(cfg *Config, file FileConfig) error {

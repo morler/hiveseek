@@ -634,6 +634,10 @@ func TestSkillsImproverListedOnceEnabled(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.DataDir = t.TempDir()
 	cfg.Plugins = plugins.ConfigMap{"skills-improver": {Enabled: boolPtr(true)}}
+	// A default-disabled plugin also needs the session capability the user
+	// granted. Only the user-level config file produces that grant, so it has
+	// to be written where New() reads the global layer (M1-40/M1-42).
+	writeGlobalConfig(t, cfg.DataDir, "[plugins.skills-improver]\nenabled = true\n")
 	app, err := New(t.Context(), cfg, StartOptions{NewSession: true})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -674,14 +678,29 @@ func TestSkillsImproverUsesSharedPluginEnableConfig(t *testing.T) {
 		t.Fatalf("expected shared [plugins.skills-improver] table, got %+v", file.Plugins)
 	}
 
-	mgr := plugins.NewManager(plugins.Context{DataDir: loaded.DataDir, WorkspaceRoot: workspace}, loaded.Plugins)
-	found := false
-	for _, st := range mgr.Statuses() {
-		if st.Manifest.ID == "skills-improver" {
-			found = true
+	// The shared table alone cannot enable it: a project-level config may only
+	// tighten the capability the user granted (M1-42/M1-43).
+	listed := func(ctx plugins.Context, config plugins.ConfigMap) bool {
+		for _, st := range plugins.NewManager(ctx, config).Statuses() {
+			if st.Manifest.ID == "skills-improver" {
+				return true
+			}
 		}
+		return false
 	}
-	if !found {
-		t.Fatalf("shared enable config should list skills-improver: %+v", mgr.Statuses())
+	ctx := plugins.Context{DataDir: loaded.DataDir, WorkspaceRoot: workspace}
+	if listed(ctx, loaded.Plugins) {
+		t.Fatal("project-level enable config alone must not list skills-improver")
+	}
+	ctx.UserGrants = plugins.NewSessionGrants("skills-improver")
+	if !listed(ctx, loaded.Plugins) {
+		t.Fatal("shared enable config plus a user grant should list skills-improver")
+	}
+}
+
+func writeGlobalConfig(t *testing.T, dataDir, body string) {
+	t.Helper()
+	if err := os.WriteFile(GlobalConfigPath(dataDir), []byte(body), 0o600); err != nil {
+		t.Fatalf("write global config: %v", err)
 	}
 }

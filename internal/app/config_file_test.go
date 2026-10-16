@@ -1224,3 +1224,50 @@ func TestLoadAndApplyConfigResolvesAPITransport(t *testing.T) {
 		}
 	})
 }
+
+func TestUserGrantsComeFromUserLevelConfigAlone(t *testing.T) {
+	enabled := true
+	truePtr := &enabled
+
+	// The user-level layer enables the plugin: the session capability grants
+	// it before the project layers merge in (M1-40/M1-41).
+	cfg := Config{}
+	if err := ApplyLoadedConfig(&cfg, LoadedConfig{
+		Global: FileConfig{Plugins: FilePluginsConfig{"skills-improver": {Enabled: truePtr}}},
+	}); err != nil {
+		t.Fatalf("ApplyLoadedConfig: %v", err)
+	}
+	if !cfg.UserGrants.Granted("skills-improver") {
+		t.Fatal("user-level enable should grant the plugin for the session")
+	}
+
+	// A project layer enabling the plugin grants nothing (M1-42), and a
+	// project layer disabling it tightens the user grant away (M1-43).
+	projectOnly := Config{}
+	if err := ApplyLoadedConfig(&projectOnly, LoadedConfig{
+		Project: FileConfig{Plugins: FilePluginsConfig{"skills-improver": {Enabled: truePtr}}},
+	}); err != nil {
+		t.Fatalf("ApplyLoadedConfig: %v", err)
+	}
+	if projectOnly.UserGrants.Granted("skills-improver") {
+		t.Fatal("project-level enable must not grant the plugin")
+	}
+	if projectOnly.Plugins["skills-improver"].Enabled == nil || !*projectOnly.Plugins["skills-improver"].Enabled {
+		t.Fatal("project-level enable should still land in the merged plugin config")
+	}
+
+	disabled := false
+	tightened := Config{}
+	if err := ApplyLoadedConfig(&tightened, LoadedConfig{
+		Global:  FileConfig{Plugins: FilePluginsConfig{"skills-improver": {Enabled: truePtr}}},
+		Project: FileConfig{Plugins: FilePluginsConfig{"skills-improver": {Enabled: &disabled}}},
+	}); err != nil {
+		t.Fatalf("ApplyLoadedConfig: %v", err)
+	}
+	if !tightened.UserGrants.Granted("skills-improver") {
+		t.Fatal("the user grant itself must survive a project layer")
+	}
+	if tightened.Plugins["skills-improver"].Enabled == nil || *tightened.Plugins["skills-improver"].Enabled {
+		t.Fatal("project-level disable should tighten the merged plugin config")
+	}
+}

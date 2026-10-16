@@ -14,7 +14,7 @@ func SetPluginEnabledConfig(cfg Config, workspaceRoot, id string, enabled bool) 
 	if id == "" {
 		return cfg, "", fmt.Errorf("plugin id must not be empty")
 	}
-	pm := plugins.NewManager(plugins.Context{DataDir: cfg.DataDir, WorkspaceRoot: workspaceRoot}, cfg.Plugins)
+	pm := plugins.NewManager(plugins.Context{DataDir: cfg.DataDir, WorkspaceRoot: workspaceRoot, UserGrants: cfg.UserGrants}, cfg.Plugins)
 	st, ok := pm.Status(id)
 	if !ok {
 		return cfg, "", fmt.Errorf("plugin not found: %s", id)
@@ -59,7 +59,7 @@ func (a *App) SetPluginEnabled(id string, enabled bool) (string, error) {
 		return "", err
 	}
 	a.cfg.Plugins = cfg.Plugins
-	pm := plugins.NewManager(plugins.Context{DataDir: a.cfg.DataDir, WorkspaceRoot: a.workspaceRoot}, a.cfg.Plugins)
+	pm := plugins.NewManager(plugins.Context{DataDir: a.cfg.DataDir, WorkspaceRoot: a.workspaceRoot, UserGrants: a.cfg.UserGrants}, a.cfg.Plugins)
 	outcome := pm.Outcome()
 	allHooks := append([]agent.ResolvedHook{}, a.hooks...)
 	allHooks = append(allHooks, outcome.CommandHooks...)

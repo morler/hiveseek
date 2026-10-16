@@ -517,22 +517,49 @@ func TestSkillsImproverStaysOffUntilEnabled(t *testing.T) {
 		t.Fatalf("disabled skills-improver should still resolve as disabled: ok=%v status=%+v", ok, st)
 	}
 
+	// Enabling the config alone cannot turn it on: a default-disabled plugin
+	// needs the session capability the user granted (M1-42).
 	enabled := true
-	on := NewManager(Context{DataDir: dataDir, WorkspaceRoot: workspace}, ConfigMap{
+	configOnly := NewManager(Context{DataDir: dataDir, WorkspaceRoot: workspace}, ConfigMap{
 		"skills-improver": {Enabled: &enabled},
 	})
-	st, ok := on.Status("skills-improver")
+	if st, ok := configOnly.Status("skills-improver"); !ok || st.Enabled {
+		t.Fatalf("project config alone must not enable skills-improver: ok=%v status=%+v", ok, st)
+	}
+
+	// The user grant is the only thing that turns it on.
+	granted := NewManager(Context{
+		DataDir:       dataDir,
+		WorkspaceRoot: workspace,
+		UserGrants:    NewSessionGrants("skills-improver"),
+	}, ConfigMap{
+		"skills-improver": {Enabled: &enabled},
+	})
+	st, ok := granted.Status("skills-improver")
 	if !ok || !st.Enabled {
-		t.Fatalf("enabled skills-improver should resolve as enabled: ok=%v status=%+v", ok, st)
+		t.Fatalf("granted skills-improver should resolve as enabled: ok=%v status=%+v", ok, st)
 	}
 	found := false
-	for _, listed := range on.Statuses() {
+	for _, listed := range granted.Statuses() {
 		if listed.Manifest.ID == "skills-improver" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("enabled skills-improver should be listed: %+v", on.Statuses())
+		t.Fatalf("granted skills-improver should be listed: %+v", granted.Statuses())
+	}
+
+	// A config layer may still tighten the grant back off (M1-43).
+	disabled := false
+	tightened := NewManager(Context{
+		DataDir:       dataDir,
+		WorkspaceRoot: workspace,
+		UserGrants:    NewSessionGrants("skills-improver"),
+	}, ConfigMap{
+		"skills-improver": {Enabled: &disabled},
+	})
+	if st, ok := tightened.Status("skills-improver"); !ok || st.Enabled {
+		t.Fatalf("config disable must tighten a granted skills-improver: ok=%v status=%+v", ok, st)
 	}
 }
 

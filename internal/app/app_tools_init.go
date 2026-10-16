@@ -36,7 +36,7 @@ func initAppTools(cfg Config, start StartOptions, workspaceRoot string) (appTool
 	if err != nil {
 		return appToolInit{}, fmt.Errorf("load mcp config: %w", err)
 	}
-	pluginManager := plugins.NewManager(plugins.Context{DataDir: cfg.DataDir, WorkspaceRoot: workspaceRoot}, cfg.Plugins)
+	pluginManager := plugins.NewManager(plugins.Context{DataDir: cfg.DataDir, WorkspaceRoot: workspaceRoot, UserGrants: cfg.UserGrants}, cfg.Plugins)
 	pluginOutcome := pluginManager.Outcome()
 	mergePluginMCPServers(&mcpConfig, pluginOutcome.MCPServers)
 	mcpManager := whalemcp.NewManager(mcpConfig, workspaceRoot)

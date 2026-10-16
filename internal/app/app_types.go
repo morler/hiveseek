@@ -24,40 +24,44 @@ const (
 )
 
 type Config struct {
-	DataDir                        string
-	ConfigLoaded                   bool
-	PermissionDefault              policy.PermissionAction
-	PermissionRules                []policy.PermissionRule
-	AutoAcceptPermissions          bool
-	AutoCompact                    bool
-	AutoCompactThreshold           float64
-	MemoryEnabled                  bool
-	MemoryMaxChars                 int
-	MemoryFileOrder                string
-	BudgetWarningUSD               float64
-	Model                          string
-	ModelExplicit                  bool
-	ReasoningEffort                string
-	ThinkingEnabled                bool
-	CheckForUpdateOnStartup        bool
-	ViewMode                       string
-	ShowReasoning                  bool
-	RetryMaxAttempts               int
-	RetryMaxAttemptsExplicit       bool
-	RetryStreamMaxAttempts         int
-	RetryStreamIdleTimeout         time.Duration
-	RetryMaxDelay                  time.Duration
-	DeepSeekPrefixCompletion       bool
-	DeepSeekMultimodal             MultimodalProviderConfig
-	DeepSeekWebSearch              deepseek.WebSearchMode
-	DeepSeekAPI                    deepseek.API
-	ShellForegroundWaitDefaultMS   int
-	ShellForegroundWaitMaxMS       int
-	MaxParallelSubagents           int
-	MCPConfigPath                  string
-	APIBaseURL                     string
-	SkillsDisabled                 []string
-	Plugins                        plugins.ConfigMap
+	DataDir                      string
+	ConfigLoaded                 bool
+	PermissionDefault            policy.PermissionAction
+	PermissionRules              []policy.PermissionRule
+	AutoAcceptPermissions        bool
+	AutoCompact                  bool
+	AutoCompactThreshold         float64
+	MemoryEnabled                bool
+	MemoryMaxChars               int
+	MemoryFileOrder              string
+	BudgetWarningUSD             float64
+	Model                        string
+	ModelExplicit                bool
+	ReasoningEffort              string
+	ThinkingEnabled              bool
+	CheckForUpdateOnStartup      bool
+	ViewMode                     string
+	ShowReasoning                bool
+	RetryMaxAttempts             int
+	RetryMaxAttemptsExplicit     bool
+	RetryStreamMaxAttempts       int
+	RetryStreamIdleTimeout       time.Duration
+	RetryMaxDelay                time.Duration
+	DeepSeekPrefixCompletion     bool
+	DeepSeekMultimodal           MultimodalProviderConfig
+	DeepSeekWebSearch            deepseek.WebSearchMode
+	DeepSeekAPI                  deepseek.API
+	ShellForegroundWaitDefaultMS int
+	ShellForegroundWaitMaxMS     int
+	MaxParallelSubagents         int
+	MCPConfigPath                string
+	APIBaseURL                   string
+	SkillsDisabled               []string
+	Plugins                      plugins.ConfigMap
+	// UserGrants is the session authorization for default-disabled plugins,
+	// taken from the user-level config alone before any project layer merges
+	// in. Project config may tighten it, never grant it (plan §4.2).
+	UserGrants                     plugins.SessionGrants
 	LSPEnabled                     bool
 	LSPEnabledExplicit             bool
 	WorkflowsEnabled               bool

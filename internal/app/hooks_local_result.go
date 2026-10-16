@@ -103,7 +103,7 @@ func (a *App) SetHookEnabled(keys []string, enabled bool) (string, error) {
 func (a *App) rebuildHookRunner(message string) (string, error) {
 	pm := a.pluginManager
 	if pm == nil {
-		pm = plugins.NewManager(plugins.Context{DataDir: a.cfg.DataDir, WorkspaceRoot: a.workspaceRoot}, a.cfg.Plugins)
+		pm = plugins.NewManager(plugins.Context{DataDir: a.cfg.DataDir, WorkspaceRoot: a.workspaceRoot, UserGrants: a.cfg.UserGrants}, a.cfg.Plugins)
 	}
 	outcome := pm.Outcome()
 	allHooks := append([]agent.ResolvedHook{}, a.hooks...)

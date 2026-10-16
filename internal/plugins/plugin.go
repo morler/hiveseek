@@ -80,6 +80,36 @@ type Display struct {
 type Context struct {
 	DataDir       string
 	WorkspaceRoot string
+	// UserGrants is the session authorization for plugins that stay off until
+	// the user grants them. It is built from the user-level config and the real
+	// user startup entry, before config files are merged, and passed in on its
+	// own — never reverse-engineered from the merged ConfigMap (plan §4.2,
+	// M1-40/M1-41).
+	UserGrants SessionGrants
+}
+
+// SessionGrants records which plugins the user granted for this session. The
+// zero value grants nothing, so an unset grant keeps every default-disabled
+// plugin off.
+type SessionGrants struct {
+	granted map[string]bool
+}
+
+// NewSessionGrants records the plugin IDs the user granted this session.
+func NewSessionGrants(ids ...string) SessionGrants {
+	g := SessionGrants{granted: map[string]bool{}}
+	for _, id := range ids {
+		if id = NormalizePluginID(id); id != "" {
+			g.granted[id] = true
+		}
+	}
+	return g
+}
+
+// Granted reports whether the user granted this plugin for the session. Only
+// default-disabled plugins consult it, so granting anything else is a no-op.
+func (g SessionGrants) Granted(id string) bool {
+	return g.granted[NormalizePluginID(id)]
 }
 
 type Config struct {
@@ -309,6 +339,12 @@ func NewManager(ctx Context, config ConfigMap) *Manager {
 		enabled := !manifest.DefaultDisabled
 		if cfg, ok := config[manifest.ID]; ok && cfg.Enabled != nil {
 			enabled = *cfg.Enabled
+		}
+		// A default-disabled plugin needs the session capability: config
+		// files may turn it off but only a user-level grant turns it on
+		// (M1-40/M1-41, M1-42/M1-43).
+		if manifest.DefaultDisabled && !ctx.UserGrants.Granted(manifest.ID) {
+			enabled = false
 		}
 		if !enabled {
 			m.disabled = append(m.disabled, p)

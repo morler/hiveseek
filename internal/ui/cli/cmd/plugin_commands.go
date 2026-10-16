@@ -100,7 +100,7 @@ func runPluginList(out io.Writer, cfg app.Config) error {
 	if err != nil {
 		return fmt.Errorf("get workspace: %w", err)
 	}
-	mgr := plugins.NewManager(plugins.Context{DataDir: cfg.DataDir, WorkspaceRoot: workspace}, cfg.Plugins)
+	mgr := plugins.NewManager(plugins.Context{DataDir: cfg.DataDir, WorkspaceRoot: workspace, UserGrants: cfg.UserGrants}, cfg.Plugins)
 	statuses := mgr.Statuses()
 	if len(statuses) == 0 {
 		fmt.Fprintln(out, "No plugins installed.")
@@ -169,7 +169,7 @@ func runPluginInspect(out io.Writer, cfg app.Config, id string) error {
 	if err != nil {
 		return fmt.Errorf("get workspace: %w", err)
 	}
-	mgr := plugins.NewManager(plugins.Context{DataDir: cfg.DataDir, WorkspaceRoot: workspace}, cfg.Plugins)
+	mgr := plugins.NewManager(plugins.Context{DataDir: cfg.DataDir, WorkspaceRoot: workspace, UserGrants: cfg.UserGrants}, cfg.Plugins)
 	status, ok := mgr.Status(id)
 	if !ok {
 		return fmt.Errorf("plugin not installed: %s", id)
