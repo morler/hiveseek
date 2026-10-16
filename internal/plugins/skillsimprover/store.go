@@ -69,11 +69,14 @@ type Evidence struct {
 }
 
 type Proposal struct {
-	ID                 string    `json:"id"`
-	CreatedAt          time.Time `json:"created_at"`
-	Skill              string    `json:"skill"`
-	SkillFilePath      string    `json:"skill_file_path"`
-	OriginalSHA256     string    `json:"original_sha256"`
+	ID             string    `json:"id"`
+	CreatedAt      time.Time `json:"created_at"`
+	Skill          string    `json:"skill"`
+	SkillFilePath  string    `json:"skill_file_path"`
+	OriginalSHA256 string    `json:"original_sha256"`
+	// OriginalBackupPath is where the pre-apply bytes were kept; empty on
+	// proposals written before backups existed.
+	OriginalBackupPath string    `json:"original_backup_path,omitempty"`
 	Summary            string    `json:"summary"`
 	Risk               string    `json:"risk,omitempty"`
 	ProposedSkillMD    string    `json:"proposed_skill_md"`
@@ -322,6 +325,13 @@ func (s *Store) ApplyProposal(id string) (Proposal, error) {
 	if sha256Hex(current) != p.OriginalSHA256 {
 		return Proposal{}, fmt.Errorf("target skill changed: sha mismatch")
 	}
+	// The backup lands before the target is replaced; if it cannot be written
+	// the target is left untouched.
+	backupPath, err := s.writeOriginalBackup(current)
+	if err != nil {
+		return Proposal{}, err
+	}
+	p.OriginalBackupPath = backupPath
 	if err := writeFileAtomic(p.SkillFilePath, []byte(strings.TrimSpace(p.ProposedSkillMD)+"\n")); err != nil {
 		return Proposal{}, fmt.Errorf("write target skill: %w", err)
 	}
@@ -367,6 +377,28 @@ func (s *Store) evidencePath() string {
 
 func (s *Store) proposalsDir() string {
 	return filepath.Join(s.dataDir, "proposals")
+}
+
+func (s *Store) backupsDir() string {
+	return filepath.Join(s.dataDir, "backups")
+}
+
+// writeOriginalBackup stores the skill bytes read at apply time, named by their
+// sha256, so the exact original is recoverable before the target is replaced.
+// Content addressed, so a retry after a failed apply does not rewrite it.
+func (s *Store) writeOriginalBackup(content []byte) (string, error) {
+	if err := securefs.MkdirPrivate(s.backupsDir()); err != nil {
+		return "", fmt.Errorf("create backups dir: %w", err)
+	}
+	name := "sha256-" + sha256Hex(content) + ".md"
+	path := filepath.Join(s.backupsDir(), name)
+	if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() {
+		return path, nil
+	}
+	if err := securefs.WritePrivateFile(path, content); err != nil {
+		return "", fmt.Errorf("write original backup: %w", err)
+	}
+	return path, nil
 }
 
 func validateSkillContent(expectedName, content string) error {

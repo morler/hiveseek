@@ -585,3 +585,106 @@ func TestWriteFileAtomicPreservesTargetModeAndCleansTemp(t *testing.T) {
 		t.Fatalf("failed rename must leave target untouched, got %q", string(got))
 	}
 }
+func TestApplyProposalKeepsOriginalBackupBeforeReplace(t *testing.T) {
+	workspace := t.TempDir()
+	skillPath := writeTestSkill(t, workspace, "demo", "old body")
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	orig, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := store.SaveProposal(Proposal{
+		Skill:           "demo",
+		SkillFilePath:   skillPath,
+		OriginalSHA256:  sha256Hex(orig),
+		Summary:         "change",
+		ProposedSkillMD: skillMarkdown("demo", "second body"),
+	})
+	if err != nil {
+		t.Fatalf("save proposal: %v", err)
+	}
+	applied, err := store.ApplyProposal(p.ID)
+	if err != nil {
+		t.Fatalf("apply proposal: %v", err)
+	}
+	if applied.OriginalBackupPath == "" {
+		t.Fatal("expected the original to be backed up before the replace")
+	}
+	backup, err := os.ReadFile(applied.OriginalBackupPath)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if string(backup) != string(orig) {
+		t.Fatalf("backup must hold the original bytes, got %q", string(backup))
+	}
+	reloaded, err := store.ReadProposal(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.OriginalBackupPath != applied.OriginalBackupPath {
+		t.Fatalf("backup path must persist on the proposal, got %q", reloaded.OriginalBackupPath)
+	}
+
+	// A failure while replacing the target still leaves a complete backup.
+	current, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing, err := store.SaveProposal(Proposal{
+		Skill:           "demo",
+		SkillFilePath:   skillPath,
+		OriginalSHA256:  sha256Hex(current),
+		Summary:         "change again",
+		ProposedSkillMD: skillMarkdown("demo", "third body"),
+	})
+	if err != nil {
+		t.Fatalf("save proposal: %v", err)
+	}
+	origRename := atomicWriteRename
+	t.Cleanup(func() { atomicWriteRename = origRename })
+	atomicWriteRename = func(string, string) error { return errors.New("injected replace failure") }
+	if _, err := store.ApplyProposal(failing.ID); err == nil {
+		t.Fatal("expected the injected replace failure")
+	}
+	atomicWriteRename = origRename
+	after, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(current) {
+		t.Fatalf("target must be untouched when the replace fails, got %q", string(after))
+	}
+	kept, err := os.ReadFile(filepath.Join(store.backupsDir(), "sha256-"+sha256Hex(current)+".md"))
+	if err != nil {
+		t.Fatalf("backup written before the failed replace must survive: %v", err)
+	}
+	if string(kept) != string(current) {
+		t.Fatal("backup written before the failed replace must be complete")
+	}
+
+	// If the backup cannot be written at all, apply aborts before the target.
+	blockedStore := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	blocked, err := blockedStore.SaveProposal(Proposal{
+		Skill:           "demo",
+		SkillFilePath:   skillPath,
+		OriginalSHA256:  sha256Hex(current),
+		Summary:         "change with blocked backups",
+		ProposedSkillMD: skillMarkdown("demo", "fourth body"),
+	})
+	if err != nil {
+		t.Fatalf("save proposal: %v", err)
+	}
+	if err := os.WriteFile(blockedStore.backupsDir(), []byte("block backups"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blockedStore.ApplyProposal(blocked.ID); err == nil {
+		t.Fatal("apply must abort when the backup cannot be written")
+	}
+	untouched, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(untouched) != string(current) {
+		t.Fatalf("target must be untouched when the backup fails, got %q", string(untouched))
+	}
+}
