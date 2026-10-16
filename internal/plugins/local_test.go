@@ -271,8 +271,10 @@ hooks = "./hooks.toml"
 		t.Fatalf("expected absolute plugin hook cwd, got %q", hooks[0].CWD)
 	}
 	outcome := mgr.Outcome()
-	if len(outcome.Plugins) != 2 {
-		t.Fatalf("expected memory plus local plugin in outcome, got %+v", outcome.Plugins)
+	// memory, the installed local plugin, and the default-disabled
+	// skills-improver builtin (M1-35).
+	if len(outcome.Plugins) != 3 {
+		t.Fatalf("expected memory, local plugin, and default-disabled builtin in outcome, got %+v", outcome.Plugins)
 	}
 	if _, ok := outcome.MCPServers["demo-plugin.local-server"]; !ok {
 		t.Fatalf("outcome missing plugin MCP server: %+v", outcome.MCPServers)
@@ -490,4 +492,46 @@ func contains(xs []string, v string) bool {
 
 func whalemcpServerWithName(name string) whalemcp.ServerConfig {
 	return whalemcp.ServerConfig{Name: name}
+}
+
+func TestSkillsImproverStaysOffUntilEnabled(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := t.TempDir()
+
+	off := NewManager(Context{DataDir: dataDir, WorkspaceRoot: workspace}, nil)
+	for _, st := range off.Statuses() {
+		if st.Manifest.ID == "skills-improver" {
+			t.Fatalf("disabled skills-improver should not be listed: %+v", st)
+		}
+	}
+	listed := false
+	for _, st := range off.Statuses() {
+		if st.Manifest.ID == "memory" {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Fatalf("enabling nothing should still list memory: %+v", off.Statuses())
+	}
+	if st, ok := off.Status("skills-improver"); !ok || st.Enabled {
+		t.Fatalf("disabled skills-improver should still resolve as disabled: ok=%v status=%+v", ok, st)
+	}
+
+	enabled := true
+	on := NewManager(Context{DataDir: dataDir, WorkspaceRoot: workspace}, ConfigMap{
+		"skills-improver": {Enabled: &enabled},
+	})
+	st, ok := on.Status("skills-improver")
+	if !ok || !st.Enabled {
+		t.Fatalf("enabled skills-improver should resolve as enabled: ok=%v status=%+v", ok, st)
+	}
+	found := false
+	for _, listed := range on.Statuses() {
+		if listed.Manifest.ID == "skills-improver" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("enabled skills-improver should be listed: %+v", on.Statuses())
+	}
 }

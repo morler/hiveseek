@@ -628,3 +628,26 @@ func hasHookSource(all []agent.HookListEntry, source string) bool {
 	}
 	return false
 }
+
+func TestSkillsImproverListedOnceEnabled(t *testing.T) {
+	t.Setenv("DEEPSEEK_API_KEY", "sk-test")
+	cfg := DefaultConfig()
+	cfg.DataDir = t.TempDir()
+	cfg.Plugins = plugins.ConfigMap{"skills-improver": {Enabled: boolPtr(true)}}
+	app, err := New(t.Context(), cfg, StartOptions{NewSession: true})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer app.Close()
+
+	var got []string
+	for _, st := range app.PluginStatuses() {
+		got = append(got, st.Manifest.ID)
+	}
+	if !strings.Contains(strings.Join(got, "\n"), "skills-improver") {
+		t.Fatalf("enabled skills-improver should be listed: %v", got)
+	}
+	if app.toolRegistry.Get("save_skill_proposal") == nil {
+		t.Fatal("enabled skills-improver should register save_skill_proposal")
+	}
+}

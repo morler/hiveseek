@@ -13,6 +13,7 @@ import (
 	"github.com/usewhale/whale/internal/core"
 	whalemcp "github.com/usewhale/whale/internal/mcp"
 	"github.com/usewhale/whale/internal/plugins/memoryplugin"
+	"github.com/usewhale/whale/internal/plugins/skillsimprover"
 	"github.com/usewhale/whale/internal/skills"
 )
 
@@ -41,21 +42,25 @@ const (
 )
 
 type Manifest struct {
-	ID           string
-	Name         string
-	Version      string
-	Description  string
-	Official     bool
-	Authors      []string
-	License      string
-	Homepage     string
-	Repository   string
-	Keywords     []string
-	Components   Components
-	Display      Display
-	Capabilities []Capability
-	Permissions  []Permission
-	Status       string
+	ID          string
+	Name        string
+	Version     string
+	Description string
+	Official    bool
+	// DefaultDisabled marks a builtin that stays off until the user enables
+	// it through the plugin config. Only the status listing hides it; the
+	// manager still finds it so the plugin can be enabled (M1-35).
+	DefaultDisabled bool
+	Authors         []string
+	License         string
+	Homepage        string
+	Repository      string
+	Keywords        []string
+	Components      Components
+	Display         Display
+	Capabilities    []Capability
+	Permissions     []Permission
+	Status          string
 }
 
 type Components struct {
@@ -301,7 +306,7 @@ func NewManager(ctx Context, config ConfigMap) *Manager {
 			continue
 		}
 		m.byID[manifest.ID] = p
-		enabled := true
+		enabled := !manifest.DefaultDisabled
 		if cfg, ok := config[manifest.ID]; ok && cfg.Enabled != nil {
 			enabled = *cfg.Enabled
 		}
@@ -715,7 +720,22 @@ func (m *Manager) Statuses() []PluginStatus {
 	if m == nil {
 		return nil
 	}
-	return clonePluginStatuses(m.outcome.Statuses)
+	return visiblePluginStatuses(m.outcome.Statuses)
+}
+
+// visiblePluginStatuses hides a default-disabled builtin (skills-improver) while
+// it is off. The manager still loads and enables it normally; only the listing
+// omits it, so enabling the plugin is what makes it appear (M1-35, M0-E
+// decision 6). Other plugins are listed exactly as before.
+func visiblePluginStatuses(statuses []PluginStatus) []PluginStatus {
+	visible := make([]PluginStatus, 0, len(statuses))
+	for _, status := range statuses {
+		if status.Manifest.ID == skillsimprover.PluginID && !status.Enabled {
+			continue
+		}
+		visible = append(visible, status)
+	}
+	return clonePluginStatuses(visible)
 }
 
 func (m *Manager) Diagnostics(ctx context.Context) []Diagnostic {
@@ -936,6 +956,7 @@ func cloneStringMap(in map[string]string) map[string]string {
 func builtins() []Plugin {
 	return []Plugin{
 		memoryPlugin{},
+		skillsImproverPlugin{},
 	}
 }
 
@@ -1182,4 +1203,47 @@ func (localIndexerPlugin) Hooks(Context) []agent.HookHandler {
 
 func (localIndexerPlugin) Doctor(_ context.Context, _ Context) []Diagnostic {
 	return []Diagnostic{{PluginID: "local-indexer", Level: DiagnosticWarn, Label: "implementation", Detail: "scaffold only; local inference and indexing are not implemented"}}
+}
+
+// skillsImproverPlugin hosts the project-skill improvement loop. It is
+// registered default-disabled: until the user enables it through the plugin
+// config there is no skill, no tool, no hook and no evidence write (M1-36,
+// M1-37, M1-38), and Statuses() omits it (M1-35).
+type skillsImproverPlugin struct{}
+
+func (skillsImproverPlugin) Manifest() Manifest {
+	return Manifest{
+		ID:              skillsimprover.PluginID,
+		Name:            "Skills Improver",
+		Version:         "0.1.0",
+		Description:     "Review skill usage evidence and draft human-reviewed SKILL.md improvement proposals.",
+		Official:        true,
+		DefaultDisabled: true,
+		Capabilities: []Capability{
+			CapabilitySkills,
+			CapabilityTools,
+			CapabilityHooks,
+			CapabilityStorage,
+		},
+		Permissions: []Permission{PermissionReadPluginData, PermissionWritePluginData, PermissionWriteWorkspace},
+	}
+}
+
+func (skillsImproverPlugin) context(ctx Context) skillsimprover.Context {
+	return skillsimprover.Context{
+		DataDir:       ctx.PluginDataDir(skillsimprover.PluginID),
+		WorkspaceRoot: ctx.WorkspaceRoot,
+	}
+}
+
+func (p skillsImproverPlugin) Skills(ctx Context) []*skills.Skill {
+	return []*skills.Skill{skillsimprover.Skill()}
+}
+
+func (p skillsImproverPlugin) Tools(ctx Context) []core.Tool {
+	return skillsimprover.Tools(p.context(ctx))
+}
+
+func (p skillsImproverPlugin) Hooks(ctx Context) []agent.HookHandler {
+	return skillsimprover.Hooks(p.context(ctx))
 }
