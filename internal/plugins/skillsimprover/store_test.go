@@ -81,8 +81,15 @@ func TestApplyProposalRejectsChangedSkill(t *testing.T) {
 	if err := os.WriteFile(skillPath, []byte(skillMarkdown("demo", "external change")), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// An edit made outside this process cannot be locked out, so it must be
+	// reported as a distinguishable refusal instead of overwritten (M1-24).
 	if _, err := store.ApplyProposal(p.ID); err == nil || !strings.Contains(err.Error(), "sha mismatch") {
 		t.Fatalf("expected sha mismatch, got %v", err)
+	} else if code := rejectCode(err); code != RejectTargetDrifted {
+		t.Fatalf("code = %q, want %q", code, RejectTargetDrifted)
+	}
+	if got, err := os.ReadFile(skillPath); err != nil || string(got) != skillMarkdown("demo", "external change") {
+		t.Fatalf("the external edit must survive, got %q (err=%v)", string(got), err)
 	}
 }
 

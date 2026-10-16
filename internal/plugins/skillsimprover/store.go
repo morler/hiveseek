@@ -67,6 +67,11 @@ const (
 	// RejectRecoveryConflict means an interrupted apply left a target that matches
 	// neither the original nor the proposed bytes.
 	RejectRecoveryConflict = "recovery_conflict"
+	// RejectTargetDrifted means the target no longer holds the bytes a proposal
+	// was written against, because something else edited the file. Nothing that
+	// runs outside this process can be locked out, so the change is reported
+	// instead of being overwritten (M1-24).
+	RejectTargetDrifted = "target_changed"
 )
 
 // RejectError is a refused write target carrying a stable code.
@@ -308,7 +313,7 @@ func (s *Store) SaveProposal(p Proposal) (Proposal, error) {
 		return Proposal{}, fmt.Errorf("original_sha256 is required")
 	}
 	if p.OriginalSHA256 != currentSHA {
-		return Proposal{}, fmt.Errorf("target skill changed: sha mismatch")
+		return Proposal{}, reject(RejectTargetDrifted, "target skill changed: sha mismatch")
 	}
 	p.SkillFilePath = abs
 	p.CreatedAt = time.Now().UTC()
@@ -365,6 +370,18 @@ func (s *Store) ReadProposal(id string) (Proposal, error) {
 }
 
 func (s *Store) ApplyProposal(id string) (Proposal, error) {
+	first, err := s.ReadProposal(id)
+	if err != nil {
+		return Proposal{}, err
+	}
+	// Recoveries and applies share the target lock, so no two spellings of the
+	// same file can read the target and write it back interleaved (M1-22).
+	return s.lockedTarget(first.SkillFilePath, func() (Proposal, error) {
+		return s.applyProposalLocked(id)
+	})
+}
+
+func (s *Store) applyProposalLocked(id string) (Proposal, error) {
 	p, err := s.ReadProposal(id)
 	if err != nil {
 		return Proposal{}, err
@@ -374,7 +391,7 @@ func (s *Store) ApplyProposal(id string) (Proposal, error) {
 		// continue below
 	case StateApplying:
 		// An earlier apply was interrupted between the state commit and the
-		// applied log; settle it before doing anything new (M1-16).
+		// applied log; settle it, with the lock already held (M1-16).
 		return s.recoverInterruptedApply(p)
 	default:
 		return Proposal{}, fmt.Errorf("proposal is %s, not proposed", state)
@@ -398,7 +415,7 @@ func (s *Store) ApplyProposal(id string) (Proposal, error) {
 		return Proposal{}, fmt.Errorf("read target skill: %w", err)
 	}
 	if sha256Hex(current) != p.OriginalSHA256 {
-		return Proposal{}, fmt.Errorf("target skill changed: sha mismatch")
+		return Proposal{}, reject(RejectTargetDrifted, "target skill changed: sha mismatch")
 	}
 	// The backup lands before the target is replaced; if it cannot be written
 	// the target is left untouched. The applying state is committed first so a
@@ -558,6 +575,16 @@ func validateSkillContent(expectedName, content string) error {
 // restored. The target must still hold the bytes this apply wrote: anything else
 // is a later edit and is refused rather than overwritten (M1-20).
 func (s *Store) RestoreProposal(id string) (Proposal, error) {
+	first, err := s.ReadProposal(id)
+	if err != nil {
+		return Proposal{}, err
+	}
+	return s.lockedTarget(first.SkillFilePath, func() (Proposal, error) {
+		return s.restoreProposalLocked(id)
+	})
+}
+
+func (s *Store) restoreProposalLocked(id string) (Proposal, error) {
 	p, err := s.ReadProposal(id)
 	if err != nil {
 		return Proposal{}, err
@@ -758,6 +785,27 @@ func resolvePathLenient(path string) string {
 		return filepath.Clean(abs)
 	}
 	return filepath.Clean(path)
+}
+
+// lockedTarget runs fn with this target locked against other appliers in this
+// process and in other processes (M1-22, M1-23). Targets outside the project
+// skill roots are passed straight through: requireKnownSkillPath refuses them
+// with its own code, and no lock file is created for a path we will reject.
+func (s *Store) lockedTarget(target string, fn func() (Proposal, error)) (Proposal, error) {
+	if strings.TrimSpace(s.workspaceRoot) == "" || !strings.HasPrefix(strings.TrimSpace(target), "/") {
+		return fn()
+	}
+	realRoot := resolvePathLenient(s.workspaceRoot)
+	realTarget := resolvePathLenient(target)
+	if !strings.HasPrefix(realTarget, realRoot+string(filepath.Separator)) {
+		return fn()
+	}
+	unlock, err := s.lockTarget(s.targetLockKey(target))
+	if err != nil {
+		return Proposal{}, fmt.Errorf("lock target %s: %w", target, err)
+	}
+	defer unlock()
+	return fn()
 }
 
 func findSkillCaseInsensitive(roots []string, skillName string) (*skills.Skill, bool) {
