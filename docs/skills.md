@@ -157,3 +157,21 @@ It does not currently provide:
 
 Use `npx skills` or put skills directly in one of the discovery directories
 above.
+
+## Skill File Protection
+
+A skill improvement proposal (the built-in `skills-improver` plugin) writes to
+an existing `SKILL.md` under a project skill root only. Before it replaces the
+file it:
+
+- refuses any path outside the project `.whale/skills` and `.agents/skills`
+  roots, and refuses plugin skills, symbolic links and non-regular files
+- writes the original bytes to a private backup and verifies them against the
+  recorded SHA-256 before anything lands
+- writes through a temporary file plus rename, and serializes applies that
+  target the same file using a lock file in the private data directory
+
+The boundary is deliberate: this protects against accidents and against two
+Whale processes racing on the same file. It does **not** defend against another
+process running as the same user, which can read and write your files directly.
+Nothing here should be treated as a sandbox.

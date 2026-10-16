@@ -134,3 +134,18 @@ Disabled skills don't appear in the `$` picker. Explicit `$skill-name` or
 - No built-in install/update/uninstall commands (use `npx skills`)
 - Skills are instruction-only — no script execution or trust management
 - No automatic dependency or MCP setup
+
+## Skill File Protection
+
+A skill improvement proposal (the built-in `skills-improver` plugin) writes to
+an existing `SKILL.md` under a project skill root only. Before it replaces the
+file it refuses paths outside the project `.whale/skills` and `.agents/skills`
+roots and refuses plugin skills, symbolic links and non-regular files; it backs
+up the original bytes and verifies them against the recorded SHA-256 before
+anything lands; and it applies through a temporary file plus rename, serialized
+with a lock file in the private data directory.
+
+The boundary is deliberate: this protects against accidents and against two
+Whale processes racing on the same file. It does **not** defend against another
+process running as the same user, which can read and write your files directly.
+Nothing here should be treated as a sandbox.
