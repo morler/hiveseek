@@ -1522,6 +1522,9 @@ func TestShellRunExplicitBackgroundClampsTimeout(t *testing.T) {
 }
 
 func TestShellWaitRunningReturnsPartialOutputAndPromptDiagnosis(t *testing.T) {
+	// Commands run under `bash -lc`, which sources the developer's ~/.profile and
+	// any daemons it starts into the stderr pipe; pin HOME to keep it deterministic.
+	t.Setenv("HOME", t.TempDir())
 	oldThreshold := shellStallThreshold
 	shellStallThreshold = 10 * time.Millisecond
 	t.Cleanup(func() { shellStallThreshold = oldThreshold })
