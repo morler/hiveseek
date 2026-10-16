@@ -235,6 +235,19 @@ model = ""
 level = "info"                         # debug | info | warn | error
 ```
 
+### 插件配置与层级
+
+`[plugins.<id>]` 的 `enabled` 控制单个插件的启用状态。大多数插件在任何一层配置文件里都能启用；内置的 `skills-improver`（技能改进提案）例外：**只有用户级配置**（`~/.whale/config.toml`）能启用它。
+
+```toml
+# ~/.whale/config.toml
+[plugins.skills-improver]
+enabled = true
+```
+
+项目级配置文件（项目根下 `.whale/config.toml` 与 `.whale/config.local.toml`）对该能力只能收紧：写 `enabled = false` 会关掉它，写 `enabled = true` 不会打开它。会话启动先读用户级配置得到授权，再合并项目级配置；授权只在配置合并之前生成，所以项目配置无法凭空创建授权。
+
+`whale plugin enable <id>` 与 TUI 的 `/plugins` 面板写的是项目级配置，因此不会启用 `skills-improver`。启用后它提供 `/skills-improver status|proposals|show <id>|apply <id>|restore <id>`，命令与边界见 [Plugins](plugins.md)。
 ### 环境变量
 
 | 变量 | 覆盖内容 |

@@ -235,6 +235,29 @@ model = ""
 level = "info"                         # debug | info | warn | error
 ```
 
+### Plugin config and config layers
+
+`enabled` under `[plugins.<id>]` controls one plugin's state. Most plugins can be
+enabled from any config layer; the built-in `skills-improver` (skill improvement
+proposals) is the exception: only the **user-level config**
+(`~/.whale/config.toml`) can enable it.
+
+```toml
+# ~/.whale/config.toml
+[plugins.skills-improver]
+enabled = true
+```
+
+The project-level files (`.whale/config.toml` and `.whale/config.local.toml`
+under the project root) can only tighten it: `enabled = false` turns it off,
+while `enabled = true` does not turn it on. A session reads the user-level config
+first to derive the grant, then merges the project layers; the grant is derived
+before that merge, so a project file cannot create one.
+
+`whale plugin enable <id>` and the TUI `/plugins` panel write the project-level
+config, so they do not enable `skills-improver`. Once enabled it adds
+`/skills-improver status|proposals|show <id>|apply <id>|restore <id>`; commands
+and limits are in [Plugins](plugins.en.md).
 ### Environment variables
 
 | Variable | Overrides |
