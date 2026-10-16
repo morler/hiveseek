@@ -19,6 +19,15 @@ import (
 	"github.com/usewhale/whale/internal/worktree"
 )
 
+// Subagent identifier caps and advisory budget thresholds.
+const (
+	maxSessionPartLen        = 96
+	maxWorktreeNameLen       = 64
+	worktreeNameHashLen      = 10
+	subagentBudgetWarnSpawns = 4
+	subagentBudgetWarnTokens = 50_000
+)
+
 type SpawnSubagentRequest struct {
 	Task              string          `json:"task"`
 	Role              string          `json:"role,omitempty"`
@@ -192,6 +201,133 @@ func childFallbackApproval(permissionMode string) policy.ApprovalDecision {
 	return policy.ApprovalAllow
 }
 
+// subagentStreamState collects a child run's report, usage and progress while
+// its event stream is drained.
+type subagentStreamState struct {
+	role             string
+	model            string
+	sessionID        string
+	summaryMaxChars  int
+	progress         func(core.ToolProgress)
+	report           string
+	usage            llm.Usage
+	truncated        bool
+	toolCalls        []string
+	childActions     map[string]childToolAction
+	progressCount    int
+	progressMessages []core.SubagentStep
+}
+
+// emitStep records one child progress step and forwards it to the parent.
+func (s *subagentStreamState) emitStep(toolName, status, summary string, metadata map[string]any) {
+	s.progressCount++
+	s.progressMessages = append(s.progressMessages, core.SubagentStep{
+		ToolName: toolName,
+		Status:   status,
+		Summary:  summary,
+	})
+	emitSubagentProgressWithSteps(s.progress, s.role, s.model, s.progressCount, status, summary, s.progressMessages, metadata)
+}
+
+// drain consumes the child's event stream until it closes or fails. turnCtx is
+// the parent turn context; runCtx is the child run's context.
+func (s *subagentStreamState) drain(turnCtx, runCtx context.Context, events <-chan agent.AgentEvent) (string, error) {
+	for {
+		var ev agent.AgentEvent
+		var ok bool
+		select {
+		case ev, ok = <-events:
+			if !ok {
+				// Child closed its event stream: normal completion.
+				return "", nil
+			}
+		case <-runCtx.Done():
+			// The child's stream hung without closing (e.g. a provider that
+			// returns no data and ignores ctx). Stop waiting so the parent turn
+			// can unwind instead of deadlocking here ("关不掉"); the abandoned
+			// child goroutine is left to exit on its own if its provider ever
+			// unblocks.
+			return "cancelled", runCtx.Err()
+		}
+		switch ev.Type {
+		case agent.AgentEventTypeToolCall:
+			if ev.ToolCall != nil {
+				internalStructuredOutput := ev.ToolCall.Name == structuredOutputToolName
+				if !internalStructuredOutput {
+					s.toolCalls = append(s.toolCalls, ev.ToolCall.Name)
+				}
+				action := summarizeChildToolCall(*ev.ToolCall)
+				s.childActions[ev.ToolCall.ID] = action
+				if internalStructuredOutput {
+					continue
+				}
+				s.emitStep(ev.ToolCall.Name, "running", action.Running, map[string]any{
+					"child_session_id": s.sessionID,
+					"child_tool":       ev.ToolCall.Name,
+				})
+			}
+		case agent.AgentEventTypeToolResult:
+			if ev.Result != nil {
+				if ev.Result.Name == structuredOutputToolName {
+					continue
+				}
+				status := "running"
+				if ev.Result.IsError() {
+					status = "tool_failed"
+				}
+				action := s.childActions[ev.Result.ToolCallID]
+				summary := summarizeChildToolResult(*ev.Result, action)
+				s.emitStep(ev.Result.Name, status, summary, map[string]any{
+					"child_session_id": s.sessionID,
+					"child_tool":       ev.Result.Name,
+				})
+			}
+		case agent.AgentEventTypeDone:
+			if ev.Message != nil {
+				s.report, s.truncated = truncateString(strings.TrimSpace(ev.Message.Text), s.summaryMaxChars)
+				progressSummary := subagentSummaryLine(s.report)
+				if progressSummary == "" {
+					progressSummary = "child completed"
+				}
+				s.progressMessages = append(s.progressMessages, core.SubagentStep{
+					ToolName: "subagent",
+					Status:   "completed",
+					Summary:  progressSummary,
+				})
+				emitSubagentProgressWithSteps(s.progress, s.role, s.model, s.progressCount, "completed", progressSummary, s.progressMessages, map[string]any{
+					"child_session_id": s.sessionID,
+					"truncated":        s.truncated,
+				})
+			}
+		case agent.AgentEventTypeUsage:
+			if ev.Usage != nil {
+				s.usage = addUsage(s.usage, ev.Usage.Usage)
+			}
+		case agent.AgentEventTypeError:
+			if ev.Err != nil {
+				return "failed", ev.Err
+			}
+			return "failed", errors.New("subagent failed")
+		case agent.AgentEventTypeTurnCancelled:
+			return "cancelled", turnCtx.Err()
+		default:
+			if status, eventSummary, metadata, ok := summarizeChildAgentEvent(ev); ok {
+				if metadata == nil {
+					metadata = map[string]any{}
+				}
+				metadata["child_session_id"] = s.sessionID
+				s.emitStep("agent_event", status, eventSummary, metadata)
+			}
+			// Other child events are intentionally drained here. The parent only
+			// exposes stable subagent lifecycle/progress updates, not every
+			// internal child-agent stream event.
+		}
+		if err := runCtx.Err(); err != nil {
+			return "cancelled", err
+		}
+	}
+}
+
 func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagentRequest, progress func(core.ToolProgress)) (SpawnSubagentResponse, error) {
 	task := strings.TrimSpace(req.Task)
 	if task == "" {
@@ -333,13 +469,14 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 			r.patchSubagentMeta(sessionID, session.SessionMeta{Status: "failed", Error: err.Error(), CompletedAt: time.Now().UTC()})
 			return SpawnSubagentResponse{}, &SpawnSubagentError{SessionID: sessionID, Code: "spawn_subagent_failed", Message: err.Error(), Err: err}
 		}
-		var report string
-		var usage llm.Usage
-		var truncated bool
-		var toolCalls []string
-		childActions := map[string]childToolAction{}
-		progressCount := 0
-		var progressMessages []core.SubagentStep
+		state := &subagentStreamState{
+			role:            role,
+			model:           model,
+			sessionID:       sessionID,
+			summaryMaxChars: r.summaryMaxChars,
+			progress:        progress,
+			childActions:    map[string]childToolAction{},
+		}
 		fail := func(code string, err error) (SpawnSubagentResponse, error) {
 			msg := "subagent failed"
 			if code == "cancelled" {
@@ -351,124 +488,7 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 			r.patchSubagentMeta(sessionID, session.SessionMeta{Status: code, Error: msg, CompletedAt: time.Now().UTC()})
 			return SpawnSubagentResponse{}, &SpawnSubagentError{SessionID: sessionID, Code: code, Message: msg, Err: err}
 		}
-		drainEvents := func(events <-chan agent.AgentEvent) (string, error) {
-			for {
-				var ev agent.AgentEvent
-				var ok bool
-				select {
-				case ev, ok = <-events:
-					if !ok {
-						// Child closed its event stream: normal completion.
-						return "", nil
-					}
-				case <-runCtx.Done():
-					// The child's stream hung without closing (e.g. a provider
-					// that returns no data and ignores ctx). Stop waiting so the
-					// parent turn can unwind instead of deadlocking here ("关不
-					// 掉"); the abandoned child goroutine is left to exit on its
-					// own if its provider ever unblocks.
-					return "cancelled", runCtx.Err()
-				}
-				switch ev.Type {
-				case agent.AgentEventTypeToolCall:
-					if ev.ToolCall != nil {
-						internalStructuredOutput := ev.ToolCall.Name == structuredOutputToolName
-						if !internalStructuredOutput {
-							toolCalls = append(toolCalls, ev.ToolCall.Name)
-						}
-						action := summarizeChildToolCall(*ev.ToolCall)
-						childActions[ev.ToolCall.ID] = action
-						if internalStructuredOutput {
-							continue
-						}
-						progressCount++
-						step := core.SubagentStep{
-							ToolName: ev.ToolCall.Name,
-							Status:   "running",
-							Summary:  action.Running,
-						}
-						progressMessages = append(progressMessages, step)
-						emitSubagentProgressWithSteps(progress, role, model, progressCount, "running", action.Running, progressMessages, map[string]any{
-							"child_session_id": sessionID,
-							"child_tool":       ev.ToolCall.Name,
-						})
-					}
-				case agent.AgentEventTypeToolResult:
-					if ev.Result != nil {
-						if ev.Result.Name == structuredOutputToolName {
-							continue
-						}
-						progressCount++
-						status := "running"
-						if ev.Result.IsError() {
-							status = "tool_failed"
-						}
-						action := childActions[ev.Result.ToolCallID]
-						summary := summarizeChildToolResult(*ev.Result, action)
-						step := core.SubagentStep{
-							ToolName: ev.Result.Name,
-							Status:   status,
-							Summary:  summary,
-						}
-						progressMessages = append(progressMessages, step)
-						emitSubagentProgressWithSteps(progress, role, model, progressCount, status, summary, progressMessages, map[string]any{
-							"child_session_id": sessionID,
-							"child_tool":       ev.Result.Name,
-						})
-					}
-				case agent.AgentEventTypeDone:
-					if ev.Message != nil {
-						report, truncated = truncateString(strings.TrimSpace(ev.Message.Text), r.summaryMaxChars)
-						progressSummary := subagentSummaryLine(report)
-						if progressSummary == "" {
-							progressSummary = "child completed"
-						}
-						progressMessages = append(progressMessages, core.SubagentStep{
-							ToolName: "subagent",
-							Status:   "completed",
-							Summary:  progressSummary,
-						})
-						emitSubagentProgressWithSteps(progress, role, model, progressCount, "completed", progressSummary, progressMessages, map[string]any{
-							"child_session_id": sessionID,
-							"truncated":        truncated,
-						})
-					}
-				case agent.AgentEventTypeUsage:
-					if ev.Usage != nil {
-						usage = addUsage(usage, ev.Usage.Usage)
-					}
-				case agent.AgentEventTypeError:
-					if ev.Err != nil {
-						return "failed", ev.Err
-					}
-					return "failed", errors.New("subagent failed")
-				case agent.AgentEventTypeTurnCancelled:
-					return "cancelled", ctx.Err()
-				default:
-					if status, eventSummary, metadata, ok := summarizeChildAgentEvent(ev); ok {
-						progressCount++
-						if metadata == nil {
-							metadata = map[string]any{}
-						}
-						metadata["child_session_id"] = sessionID
-						step := core.SubagentStep{
-							ToolName: "agent_event",
-							Status:   status,
-							Summary:  eventSummary,
-						}
-						progressMessages = append(progressMessages, step)
-						emitSubagentProgressWithSteps(progress, role, model, progressCount, status, eventSummary, progressMessages, metadata)
-					}
-					// Other child events are intentionally drained here. The parent only
-					// exposes stable subagent lifecycle/progress updates, not every
-					// internal child-agent stream event.
-				}
-				if err := runCtx.Err(); err != nil {
-					return "cancelled", err
-				}
-			}
-		}
-		if code, err := drainEvents(events); err != nil {
+		if code, err := state.drain(ctx, runCtx, events); err != nil {
 			return fail(code, err)
 		}
 		if err := runCtx.Err(); err != nil {
@@ -476,7 +496,7 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 		}
 		if len(req.OutputSchema) > 0 {
 			if _, ok := structuredCapture.get(); !ok {
-				repairPrompt := structuredOutputRepairPrompt(structuredCapture.error(), report)
+				repairPrompt := structuredOutputRepairPrompt(structuredCapture.error(), state.report)
 				repairTools, err := core.NewToolRegistryChecked([]core.Tool{structuredOutputTool{schema: req.OutputSchema, capture: structuredCapture}})
 				if err != nil {
 					return fail("structured_output_missing", err)
@@ -486,7 +506,7 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 				if err != nil {
 					return fail("structured_output_missing", err)
 				}
-				if code, err := drainEvents(repairEvents); err != nil {
+				if code, err := state.drain(ctx, runCtx, repairEvents); err != nil {
 					return fail(code, err)
 				}
 			}
@@ -507,33 +527,33 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 				return SpawnSubagentResponse{}, &SpawnSubagentError{SessionID: sessionID, Code: code, Message: err.Error(), Err: err}
 			}
 			structuredResult = value
-			if strings.TrimSpace(report) == "" {
+			if strings.TrimSpace(state.report) == "" {
 				if b, err := core.MarshalToolJSON(value); err == nil {
-					report, truncated = truncateString(string(b), r.summaryMaxChars)
+					state.report, state.truncated = truncateString(string(b), r.summaryMaxChars)
 				}
 			}
 		}
-		summary := subagentSummaryLine(report)
-		if err := runSubagentStopHooks(runCtx, cfg.Hooks, sessionID, workspace.WorkspaceRoot, role, model, cfg.PermissionProfile, report, promptHookExecutor, agentHookExecutor); err != nil {
+		summary := subagentSummaryLine(state.report)
+		if err := runSubagentStopHooks(runCtx, cfg.Hooks, sessionID, workspace.WorkspaceRoot, role, model, cfg.PermissionProfile, state.report, promptHookExecutor, agentHookExecutor); err != nil {
 			r.patchSubagentMeta(sessionID, session.SessionMeta{Status: "failed", Error: err.Error(), CompletedAt: completedAt})
 			return SpawnSubagentResponse{}, &SpawnSubagentError{SessionID: sessionID, Code: "subagent_stop_hook_failed", Message: err.Error(), Err: err}
 		}
-		r.patchSubagentMeta(sessionID, session.SessionMeta{Status: "completed", Report: report, Summary: summary, CompletedAt: completedAt})
+		r.patchSubagentMeta(sessionID, session.SessionMeta{Status: "completed", Report: state.report, Summary: summary, CompletedAt: completedAt})
 		return SpawnSubagentResponse{
 			SessionID:         sessionID,
 			Role:              role,
 			Model:             model,
 			PermissionProfile: cfg.PermissionProfile,
 			Status:            "completed",
-			Report:            report,
+			Report:            state.report,
 			Summary:           summary,
 			StructuredResult:  structuredResult,
-			Truncated:         truncated,
-			ToolCalls:         toolCalls,
+			Truncated:         state.truncated,
+			ToolCalls:         state.toolCalls,
 			RequestedTools:    cloneStrings(cfg.ToolSelectors),
 			ResolvedTools:     cloneStrings(resolvedToolNames),
 			ToolMode:          toolMode,
-			Usage:             usage,
+			Usage:             state.usage,
 			DurationMS:        time.Since(start).Milliseconds(),
 			CompletedAt:       completedAt.Format(time.RFC3339),
 		}, nil
@@ -590,7 +610,7 @@ func (r *Runner) recordSubagentBudget(usage llm.Usage) SubagentBudget {
 }
 
 func subagentBudgetHint(spawnCount, totalTokens int) string {
-	if spawnCount > 4 || totalTokens >= 50_000 {
+	if spawnCount > subagentBudgetWarnSpawns || totalTokens >= subagentBudgetWarnTokens {
 		return "Subagent budget is high for this session. Prefer using current-context tools or combining remaining child tasks; each fresh subagent may pay a prefix-cache miss and a full child loop."
 	}
 	if spawnCount > 1 {
@@ -604,7 +624,7 @@ func workflowContextSystemBlock(req SpawnSubagentRequest) string {
 	runID := strings.TrimSpace(req.WorkflowRunID)
 	phase := strings.TrimSpace(req.WorkflowPhase)
 	label := strings.TrimSpace(req.WorkflowTaskLabel)
-	if name == "" && runID == "" && phase == "" && label == "" {
+	if !hasWorkflowContext(req) {
 		return ""
 	}
 	lines := []string{"Workflow context:"}
@@ -624,8 +644,14 @@ func workflowContextSystemBlock(req SpawnSubagentRequest) string {
 	return strings.Join(lines, "\n")
 }
 
+// hasWorkflowContext reports whether req carries any workflow metadata.
+func hasWorkflowContext(req SpawnSubagentRequest) bool {
+	return strings.TrimSpace(req.WorkflowName) != "" || strings.TrimSpace(req.WorkflowRunID) != "" ||
+		strings.TrimSpace(req.WorkflowPhase) != "" || strings.TrimSpace(req.WorkflowTaskLabel) != ""
+}
+
 func workflowApprovalMetadata(existing map[string]any, req SpawnSubagentRequest) map[string]any {
-	if strings.TrimSpace(req.WorkflowName) == "" && strings.TrimSpace(req.WorkflowRunID) == "" && strings.TrimSpace(req.WorkflowPhase) == "" && strings.TrimSpace(req.WorkflowTaskLabel) == "" {
+	if !hasWorkflowContext(req) {
 		return existing
 	}
 	out := map[string]any{}
@@ -714,10 +740,10 @@ func isolatedWorktreeName(role, sessionID string) string {
 		role = "agent"
 	}
 	sum := sha1.Sum([]byte(sessionID))
-	suffix := hex.EncodeToString(sum[:])[:10]
+	suffix := hex.EncodeToString(sum[:])[:worktreeNameHashLen]
 	name := "agent-" + role + "-" + suffix
-	if len(name) > 64 {
-		keep := 64 - len("agent--") - len(suffix)
+	if len(name) > maxWorktreeNameLen {
+		keep := maxWorktreeNameLen - len("agent--") - len(suffix)
 		if keep < 1 {
 			keep = 1
 		}
@@ -780,8 +806,8 @@ func safeSessionPart(v string) string {
 		}
 	}, v)
 	out = strings.Trim(out, "-_.")
-	if len(out) > 96 {
-		out = out[:96]
+	if len(out) > maxSessionPartLen {
+		out = out[:maxSessionPartLen]
 	}
 	return out
 }
