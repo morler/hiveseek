@@ -2,6 +2,7 @@ package skillsimprover
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 )
@@ -31,7 +32,108 @@ func HandleCommand(store *Store, line string) (string, bool, error) {
 		out, err := proposalsText(store)
 		return out, false, err
 	}
+	if fields[1] == "show" {
+		if len(fields) != 3 {
+			return "", false, fmt.Errorf("usage: %s", CommandUsage)
+		}
+		out, err := showText(store, fields[2])
+		return out, false, err
+	}
 	return "", false, fmt.Errorf("usage: %s", CommandUsage)
+}
+
+// maxShowDiffLines bounds what /skills-improver show prints. Skill files are
+// small; a runaway diff means something else went wrong.
+//
+// shortcut: the diff is truncated, not paginated. Add paging if proposals
+// ever carry files this large.
+const maxShowDiffLines = 400
+
+func showText(store *Store, id string) (string, error) {
+	p, err := store.ReadProposal(id)
+	if err != nil {
+		return "", err
+	}
+	original, err := store.proposalOriginal(p)
+	if err != nil {
+		return "", err
+	}
+	lines := []string{
+		"proposal " + p.ID,
+		"state: " + p.effectiveState(),
+		"skill: " + p.Skill,
+		"target: " + p.SkillFilePath,
+		"original sha256: " + p.OriginalSHA256,
+		"proposed sha256: " + sha256Hex([]byte(p.ProposedSkillMD)),
+		"summary: " + p.Summary,
+	}
+	if p.Risk != "" {
+		lines = append(lines, "risk: "+p.Risk)
+	}
+	lines = append(lines, "", "--- original", "+++ proposed")
+	diff := diffLines(original, p.ProposedSkillMD)
+	if len(diff) > maxShowDiffLines {
+		diff = append(diff[:maxShowDiffLines], fmt.Sprintf("... %d more line(s)", len(diff)-maxShowDiffLines))
+	}
+	return strings.Join(append(lines, diff...), "\n"), nil
+}
+
+// proposalOriginal returns the pre-apply bytes: the private backup when it is
+// still intact, otherwise whatever the target holds now.
+func (s *Store) proposalOriginal(p Proposal) (string, error) {
+	if p.OriginalBackupPath != "" {
+		if data, err := os.ReadFile(p.OriginalBackupPath); err == nil && sha256Hex(data) == p.OriginalSHA256 {
+			return string(data), nil
+		}
+	}
+	data, err := os.ReadFile(p.SkillFilePath)
+	if err != nil {
+		return "", fmt.Errorf("read target %s: %w", p.SkillFilePath, err)
+	}
+	return string(data), nil
+}
+
+// diffLines renders a line-level longest-common-subsequence diff: context
+// lines keep a leading space, removals a "-", additions a "+".
+func diffLines(original, proposed string) []string {
+	a := splitDiffLines(original)
+	b := splitDiffLines(proposed)
+	table := make([][]int, len(a)+1)
+	for i := range table {
+		table[i] = make([]int, len(b)+1)
+	}
+	for i := len(a) - 1; i >= 0; i-- {
+		for j := len(b) - 1; j >= 0; j-- {
+			if a[i] == b[j] {
+				table[i][j] = table[i+1][j+1] + 1
+				continue
+			}
+			table[i][j] = max(table[i+1][j], table[i][j+1])
+		}
+	}
+	out := make([]string, 0, len(a)+len(b))
+	for i, j := 0, 0; i < len(a) || j < len(b); {
+		switch {
+		case i < len(a) && j < len(b) && a[i] == b[j]:
+			out = append(out, " "+a[i])
+			i++
+			j++
+		case j < len(b) && (i == len(a) || table[i][j+1] > table[i+1][j]):
+			out = append(out, "+"+b[j])
+			j++
+		default:
+			out = append(out, "-"+a[i])
+			i++
+		}
+	}
+	return out
+}
+
+func splitDiffLines(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimRight(s, "\n"), "\n")
 }
 
 func proposalsText(store *Store) (string, error) {
