@@ -13,6 +13,9 @@ import (
 
 const providerRetryStatusMinimumTTL = 250 * time.Millisecond
 
+// turnSummaryLimit bounds the one-line summary of a turn's final response.
+const turnSummaryLimit = 120
+
 func (m *model) setProviderRetryStatus(ev protocol.Event) {
 	m.providerRetryStatus = strings.TrimSpace(ev.Text)
 	ttl := providerRetryStatusMinimumTTL
@@ -49,14 +52,6 @@ func metadataInt64(v any) (int64, bool) {
 func metadataBool(v any) bool {
 	b, ok := v.(bool)
 	return ok && b
-}
-
-func metadataString(v any) string {
-	s, ok := v.(string)
-	if !ok {
-		return ""
-	}
-	return s
 }
 
 func (m *model) handleServiceEvent(ev protocol.Event) (tea.Cmd, bool, bool) {
@@ -212,51 +207,11 @@ func (m *model) handleTurnDone(ev protocol.Event) tea.Cmd {
 	// symptom). Flushing here keeps the in-app position untouched while making
 	// the finished answer immediately reachable via terminal scroll.
 	turnScrollbackCmd := m.flushCompletedTurnToNativeScrollbackCmd()
-	m.addLog(logEntry{Kind: "turn_done", Source: "assistant", Summary: truncateLine(ev.LastResponse, 120), Raw: ev.LastResponse})
+	m.addLog(logEntry{Kind: "turn_done", Source: "assistant", Summary: truncateLine(ev.LastResponse, turnSummaryLimit), Raw: ev.LastResponse})
 	m.status = "ready"
-	queuedTurnStarted := false
-	shouldOpenPlanPicker := wasBusy && !wasBlockingModal && m.chatMode == "plan" && m.sawPlanCompletedThisTurn && m.mode == modeChat
-	eventCmd := turnScrollbackCmd
-	pendingWindowsInput := m.snapshotWindowsBusyInput()
-	if wasStopping {
-		m.deferredPlanPicker = false
-		if m.submitQueuedPromptAfterInterrupt && len(m.queuedPrompts) > 0 {
-			eventCmd = tea.Batch(eventCmd, m.submitQueuedPromptAfterInterruptNow(pendingWindowsInput))
-			queuedTurnStarted = true
-		} else {
-			m.submitQueuedPromptAfterInterrupt = false
-			_, restoreCmd := m.restoreQueuedPromptsToComposerWithWindowsInput(pendingWindowsInput)
-			eventCmd = tea.Batch(eventCmd, restoreCmd)
-		}
-	} else {
-		m.clearAcceptedPendingSteers()
-	}
-	if !wasStopping && m.localSubmitPending > 0 {
-		if shouldOpenPlanPicker {
-			m.deferredPlanPicker = true
-		}
-		m.status = "wait for command to finish"
-	} else if !wasStopping && shouldOpenPlanPicker {
-		// A proposed plan is pending approval. The implementation picker is the
-		// structured approve/decline gate and must take priority: do NOT submit a
-		// queued or typed prompt as another model turn here — that bypasses the
-		// gate and lets the model (mis)interpret arbitrary input (e.g. a stray "\")
-		// as approval. Preserve any queued text in the composer so it survives for
-		// after the user's decision; the picker opens below.
-		_, restoreCmd := m.restoreQueuedPromptsToComposerWithWindowsInput(pendingWindowsInput)
-		eventCmd = tea.Batch(eventCmd, restoreCmd)
-	} else if !wasStopping {
-		if next, ok := m.popQueuedPrompt(); ok {
-			m.deferredPlanPicker = false
-			eventCmd = tea.Batch(eventCmd, m.submitPromptWithBindingAndAttachments(next.Text, next.SkillBinding, attachmentInputsFromComposerAttachments(next.Attachments)), m.restoreWindowsBusyInput(pendingWindowsInput))
-			queuedTurnStarted = true
-		}
-	}
-	// The plan picker opens even when queued text was just restored to the
-	// composer: the pending plan must still be gated. A wasStopping restore is
-	// mutually exclusive with shouldOpenPlanPicker (it interrupts a turn rather
-	// than completing one), so it never satisfies this condition.
-	if !queuedTurnStarted && m.localSubmitPending == 0 && !m.hasPendingWindowsBusyInput() && shouldOpenPlanPicker {
+	shouldOpenPlanPicker := m.shouldOpenPlanPickerForCompletedTurn(wasBusy, wasBlockingModal)
+	eventCmd, queuedTurnStarted := m.routePostTurnPrompt(turnScrollbackCmd, shouldOpenPlanPicker, wasStopping)
+	if m.readyToOpenPlanPicker(queuedTurnStarted, shouldOpenPlanPicker) {
 		m.openPlanImplementationPicker()
 	}
 	// Desktop notification: only if user has been idle for 6+ seconds.
@@ -265,12 +220,62 @@ func (m *model) handleTurnDone(ev protocol.Event) tea.Cmd {
 	return eventCmd
 }
 
+// routePostTurnPrompt resumes or restores queued prompts once the turn ended,
+// and reports whether a queued turn started.
+func (m *model) routePostTurnPrompt(base tea.Cmd, shouldOpenPlanPicker, wasStopping bool) (tea.Cmd, bool) {
+	pendingWindowsInput := m.snapshotWindowsBusyInput()
+	if wasStopping {
+		m.deferredPlanPicker = false
+		if m.submitQueuedPromptAfterInterrupt && len(m.queuedPrompts) > 0 {
+			return tea.Batch(base, m.submitQueuedPromptAfterInterruptNow(pendingWindowsInput)), true
+		}
+		m.submitQueuedPromptAfterInterrupt = false
+		_, restoreCmd := m.restoreQueuedPromptsToComposerWithWindowsInput(pendingWindowsInput)
+		return tea.Batch(base, restoreCmd), false
+	}
+	m.clearAcceptedPendingSteers()
+	if m.localSubmitPending > 0 {
+		if shouldOpenPlanPicker {
+			m.deferredPlanPicker = true
+		}
+		m.status = "wait for command to finish"
+		return base, false
+	}
+	if shouldOpenPlanPicker {
+		// A proposed plan is pending approval. The implementation picker is the
+		// structured approve/decline gate and must take priority: do NOT submit a
+		// queued or typed prompt as another model turn here — that bypasses the
+		// gate and lets the model (mis)interpret arbitrary input (e.g. a stray "\")
+		// as approval. Preserve any queued text in the composer so it survives for
+		// after the user's decision; the picker opens below.
+		_, restoreCmd := m.restoreQueuedPromptsToComposerWithWindowsInput(pendingWindowsInput)
+		return tea.Batch(base, restoreCmd), false
+	}
+	if next, ok := m.popQueuedPrompt(); ok {
+		m.deferredPlanPicker = false
+		return tea.Batch(base, m.submitPromptWithBindingAndAttachments(next.Text, next.SkillBinding, attachmentInputsFromComposerAttachments(next.Attachments)), m.restoreWindowsBusyInput(pendingWindowsInput)), true
+	}
+	return base, false
+}
+
+func (m *model) shouldOpenPlanPickerForCompletedTurn(wasBusy, wasBlockingModal bool) bool {
+	return wasBusy && !wasBlockingModal && m.chatMode == "plan" && m.sawPlanCompletedThisTurn && m.mode == modeChat
+}
+
+// readyToOpenPlanPicker reports whether the pending plan must be gated before
+// anything else consumes this turn's completion. Queued text restored to the
+// composer does not block it, and an interrupted turn (wasStopping) can never
+// also complete one, so its restore never satisfies this condition.
+func (m *model) readyToOpenPlanPicker(queuedTurnStarted, shouldOpenPlanPicker bool) bool {
+	return !queuedTurnStarted && m.localSubmitPending == 0 && !m.hasPendingWindowsBusyInput() && shouldOpenPlanPicker
+}
+
 // maybeNotifyTurnDone sends a desktop notification when a turn completes.
 func (m *model) maybeNotifyTurnDone(lastResponse string) {
 	if m.notifier == nil {
 		return
 	}
-	summary := truncateLine(lastResponse, 120)
+	summary := truncateLine(lastResponse, turnSummaryLimit)
 	m.notifier.SendTurnDone(summary)
 }
 
@@ -335,9 +340,7 @@ func (m *model) appendLocalSubmitResult(role, text string, localResult *protocol
 		m.append(role, text)
 		return
 	}
-	if m.assembler != nil && m.assembler.Len() > 0 {
-		m.commitLiveTranscript(false)
-	}
+	m.flushLiveTranscript()
 	if isSessionNotice(text) {
 		m.appendTranscript("notice", tuirender.KindNotice, text)
 		return
@@ -368,10 +371,15 @@ func (m *model) appendLocalCommandEcho(cmd string) {
 		m.append("you", cmd)
 		return
 	}
+	m.flushLiveTranscript()
+	m.appendTranscript("you", tuirender.KindText, cmd)
+}
+
+// flushLiveTranscript commits live output that is still being assembled.
+func (m *model) flushLiveTranscript() {
 	if m.assembler != nil && m.assembler.Len() > 0 {
 		m.commitLiveTranscript(false)
 	}
-	m.appendTranscript("you", tuirender.KindText, cmd)
 }
 
 func isSessionNotice(text string) bool {
@@ -393,19 +401,22 @@ func (m *model) resetLiveAttemptForProviderRetry() {
 	m.resetLiveAttempt()
 }
 
-func (m *model) resetLiveAttemptForResponseReset() {
+// resetAssembler clears the live assembler when one is attached.
+func (m *model) resetAssembler() {
 	if m.assembler != nil {
 		m.assembler.Reset()
 	}
+}
+
+func (m *model) resetLiveAttemptForResponseReset() {
+	m.resetAssembler()
 	m.discardCurrentTurnModelOutput()
 	m.resetTurnVisibility()
 	m.refreshLiveViewportContent()
 }
 
 func (m *model) resetLiveAttempt() {
-	if m.assembler != nil {
-		m.assembler.Reset()
-	}
+	m.resetAssembler()
 	m.resetTimeline()
 	m.resetTurnVisibility()
 	m.refreshLiveViewportContent()
