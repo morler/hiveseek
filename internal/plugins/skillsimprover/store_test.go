@@ -403,3 +403,97 @@ func TestWriteTargetRejectsPluginSkillPath(t *testing.T) {
 		t.Fatalf("apply: want plugin target rejected, got %v", err)
 	}
 }
+func rejectCode(err error) string {
+	var rejected *RejectError
+	if errors.As(err, &rejected) {
+		return rejected.Code
+	}
+	return ""
+}
+
+func TestWriteTargetRejectsSymlinksBelowProjectRoot(t *testing.T) {
+	workspace := t.TempDir()
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	realSkill := writeTestSkill(t, workspace, "demo", "old body")
+	orig, err := os.ReadFile(realSkill)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	linkedDir := filepath.Join(workspace, ".agents", "skills", "linked")
+	if err := os.MkdirAll(filepath.Dir(linkedDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Dir(realSkill), linkedDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	linkedFileDir := filepath.Join(workspace, ".whale", "skills", "demo-link")
+	if err := os.MkdirAll(linkedFileDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realSkill, filepath.Join(linkedFileDir, "SKILL.md")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	targets := map[string]string{
+		filepath.Join(linkedDir, "SKILL.md"):     "parent directory",
+		filepath.Join(linkedFileDir, "SKILL.md"): "target file",
+	}
+	for target, kind := range targets {
+		_, err := store.SaveProposal(Proposal{
+			Skill:           "demo",
+			SkillFilePath:   target,
+			OriginalSHA256:  sha256Hex(orig),
+			Summary:         "change",
+			ProposedSkillMD: skillMarkdown("demo", "new body"),
+		})
+		if code := rejectCode(err); code != RejectTargetHasSymlink {
+			t.Fatalf("%s symlink at %s: want code %s, got %v", kind, target, RejectTargetHasSymlink, err)
+		}
+	}
+
+	after, err := os.ReadFile(realSkill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(orig) {
+		t.Fatalf("rejected symlink targets must not touch the real skill:\n%s", after)
+	}
+}
+
+func TestWriteTargetRejectsSamePrefixSiblingDirectory(t *testing.T) {
+	base := t.TempDir()
+	workspace := filepath.Join(base, "proj")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	evilSkill := writeSkillAt(t, filepath.Join(base, "proj-evil", ".whale", "skills"), "demo", "old body")
+	orig, err := os.ReadFile(evilSkill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	_, err = store.SaveProposal(Proposal{
+		Skill:           "demo",
+		SkillFilePath:   evilSkill,
+		OriginalSHA256:  sha256Hex(orig),
+		Summary:         "change",
+		ProposedSkillMD: skillMarkdown("demo", "new body"),
+	})
+	if code := rejectCode(err); code != RejectTargetOutsideProjectSkillRoots {
+		t.Fatalf("same-prefix sibling %s must be outside the roots, got %v", evilSkill, err)
+	}
+}
+
+func TestRequireRegularFileRejectsNonRegularTarget(t *testing.T) {
+	dir := t.TempDir()
+	if err := requireRegularFile(writeSkillAt(t, dir, "demo", "body")); err != nil {
+		t.Fatalf("regular skill file should pass: %v", err)
+	}
+	if code := rejectCode(requireRegularFile(dir)); code != RejectTargetNotRegularFile {
+		t.Fatalf("directory target: want code %s, got %v", RejectTargetNotRegularFile, requireRegularFile(dir))
+	}
+	if err := requireRegularFile(filepath.Join(dir, "missing", "SKILL.md")); err == nil {
+		t.Fatal("missing target must not pass the regular file check")
+	}
+}

@@ -29,6 +29,11 @@ const (
 	// RejectTargetOutsideProjectSkillRoots means the target is not inside the
 	// project-level `.whale/skills` or `.agents/skills` roots.
 	RejectTargetOutsideProjectSkillRoots = "target_outside_project_skill_roots"
+	// RejectTargetHasSymlink means a path element of the target below the project
+	// skill root is a symbolic link.
+	RejectTargetHasSymlink = "target_has_symlink"
+	// RejectTargetNotRegularFile means the target is not an existing regular file.
+	RejectTargetNotRegularFile = "target_not_regular_file"
 )
 
 // RejectError is a refused write target carrying a stable code.
@@ -386,6 +391,13 @@ func requireKnownSkillPath(workspaceRoot, skillName, path string) error {
 	if err := requireInsideProjectSkillRoot(workspaceRoot, abs); err != nil {
 		return err
 	}
+	// The symlink walk must see the caller's spelling, before symlinks are resolved.
+	if err := requireNoSymlinkBelowRoot(workspaceRoot, path); err != nil {
+		return err
+	}
+	if err := requireRegularFile(abs); err != nil {
+		return err
+	}
 	roots := skills.DefaultRoots(workspaceRoot)
 	found, ok := findSkillCaseInsensitive(roots, skillName)
 	if !ok {
@@ -431,6 +443,55 @@ func requireInsideProjectSkillRoot(workspaceRoot, target string) error {
 		}
 	}
 	return reject(RejectTargetOutsideProjectSkillRoots, "target %s is outside project skill roots %s", target, strings.Join(roots, ", "))
+}
+
+// requireNoSymlinkBelowRoot rejects a target when a path element below the
+// workspace root is a symbolic link. Paths are compared as the caller spelled
+// them, so a workspace root that is itself reached through a symlink still works.
+func requireNoSymlinkBelowRoot(workspaceRoot, target string) error {
+	base, err := filepath.Abs(filepath.Clean(workspaceRoot))
+	if err != nil {
+		return fmt.Errorf("resolve workspace root: %w", err)
+	}
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		return fmt.Errorf("resolve target path: %w", err)
+	}
+	rel, err := filepath.Rel(base, abs)
+	if err != nil {
+		return fmt.Errorf("compare target with workspace root: %w", err)
+	}
+	// shortcut: a target that spells the root through another path skips this
+	// walk; requireInsideProjectSkillRoot still pins the resolved file. Upgrade
+	// if callers start passing root paths that share spelling.
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil
+	}
+	current := base
+	for _, elem := range strings.Split(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, elem)
+		fi, err := os.Lstat(current)
+		if err != nil {
+			return fmt.Errorf("inspect target path %s: %w", current, err)
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return reject(RejectTargetHasSymlink, "target path %s is a symbolic link", current)
+		}
+	}
+	return nil
+}
+
+// requireRegularFile rejects a target that is not an existing regular file, so a
+// proposal can never create a skill or write through a device, FIFO or directory.
+func requireRegularFile(path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("inspect target skill: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return reject(RejectTargetNotRegularFile, "target %s is not a regular file", path)
+	}
+	return nil
 }
 
 // resolvePathLenient resolves symlinks when it can and falls back to an absolute
