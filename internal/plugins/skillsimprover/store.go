@@ -322,7 +322,7 @@ func (s *Store) ApplyProposal(id string) (Proposal, error) {
 	if sha256Hex(current) != p.OriginalSHA256 {
 		return Proposal{}, fmt.Errorf("target skill changed: sha mismatch")
 	}
-	if err := os.WriteFile(p.SkillFilePath, []byte(strings.TrimSpace(p.ProposedSkillMD)+"\n"), 0o600); err != nil {
+	if err := writeFileAtomic(p.SkillFilePath, []byte(strings.TrimSpace(p.ProposedSkillMD)+"\n")); err != nil {
 		return Proposal{}, fmt.Errorf("write target skill: %w", err)
 	}
 	p.AppliedAt = time.Now().UTC()
@@ -490,6 +490,47 @@ func requireRegularFile(path string) error {
 	}
 	if !fi.Mode().IsRegular() {
 		return reject(RejectTargetNotRegularFile, "target %s is not a regular file", path)
+	}
+	return nil
+}
+
+// Seams so the unit test can assert fsync lands before the rename.
+var (
+	atomicWriteSync   = func(f *os.File) error { return f.Sync() }
+	atomicWriteRename = os.Rename
+)
+
+// writeFileAtomic replaces path with data through a temp file in the same
+// directory: write, flush, fsync, then rename. The target keeps its mode bits.
+// Kept separate from the securefs permission helpers, which write in place.
+func writeFileAtomic(path string, data []byte) error {
+	mode := os.FileMode(0o600)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".skill-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op once the rename below succeeded
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("set temp file mode: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := atomicWriteSync(f); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("sync temp file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := atomicWriteRename(tmp, path); err != nil {
+		return fmt.Errorf("replace target skill: %w", err)
 	}
 	return nil
 }

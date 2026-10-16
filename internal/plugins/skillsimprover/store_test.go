@@ -497,3 +497,91 @@ func TestRequireRegularFileRejectsNonRegularTarget(t *testing.T) {
 		t.Fatal("missing target must not pass the regular file check")
 	}
 }
+func TestWriteFileAtomicSyncsBeforeRename(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	var order []string
+	origSync, origRename := atomicWriteSync, atomicWriteRename
+	t.Cleanup(func() { atomicWriteSync, atomicWriteRename = origSync, origRename })
+	atomicWriteSync = func(f *os.File) error {
+		order = append(order, "sync")
+		return f.Sync()
+	}
+	atomicWriteRename = func(oldpath, newpath string) error {
+		order = append(order, "rename")
+		return os.Rename(oldpath, newpath)
+	}
+
+	if err := writeFileAtomic(path, []byte("new\n")); err != nil {
+		t.Fatalf("atomic write: %v", err)
+	}
+	if len(order) != 2 || order[0] != "sync" || order[1] != "rename" {
+		t.Fatalf("want sync before rename, got %v", order)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new\n" {
+		t.Fatalf("want replaced content, got %q", string(got))
+	}
+}
+
+func TestWriteFileAtomicPreservesTargetModeAndCleansTemp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileAtomic(path, []byte("new\n")); err != nil {
+		t.Fatalf("atomic write: %v", err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o640 {
+		t.Fatalf("want mode 0640 preserved, got %v", fi.Mode().Perm())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "SKILL.md" {
+		t.Fatalf("temp file left behind: %v", entries)
+	}
+
+	failed := filepath.Join(dir, "other.md")
+	if err := os.WriteFile(failed, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	origRename := atomicWriteRename
+	t.Cleanup(func() { atomicWriteRename = origRename })
+	atomicWriteRename = func(oldpath, newpath string) error { return errors.New("injected rename failure") }
+	if err := writeFileAtomic(failed, []byte("new\n")); err == nil {
+		t.Fatal("expected injected rename failure")
+	}
+	entries, err = os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Fatalf("temp file left behind after failure: %s", e.Name())
+		}
+	}
+	got, err := os.ReadFile(failed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "old" {
+		t.Fatalf("failed rename must leave target untouched, got %q", string(got))
+	}
+}
