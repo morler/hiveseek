@@ -15,7 +15,20 @@ import (
 const (
 	workflowRawScriptActionLabel  = "View raw script"
 	workflowRawScriptSectionTitle = "Raw script"
+	workflowLaunchKind            = "workflow-launch"
+	// skillProposalResultKind mirrors app.skillProposalResultKind: the local
+	// result that asks the user to confirm one skill write (M1-54).
+	skillProposalResultKind = "skills-improver-decision"
 )
+
+// opensConfirmationModal reports whether a local result opens the modal that
+// asks the user to confirm something before it runs.
+func opensConfirmationModal(result *protocol.LocalResult) bool {
+	if result == nil {
+		return false
+	}
+	return result.Kind == workflowLaunchKind || result.Kind == skillProposalResultKind
+}
 
 func (m *model) openWorkflowLaunch(result *protocol.LocalResult) tea.Cmd {
 	m.workflowLaunch.result = result
@@ -45,6 +58,18 @@ func (m *model) handleWorkflowLaunchKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		action := actions[m.workflowLaunch.selected]
+		if proposal := action.SkillProposal; proposal != nil {
+			kind := protocol.IntentSkillProposalApply
+			if proposal.Action == "restore" {
+				kind = protocol.IntentSkillProposalRestore
+			}
+			m.mode = modeChat
+			m.status = "command pending"
+			m.localSubmitPending++
+			m.dispatchIntent(protocol.Intent{Kind: kind, SkillProposal: proposal})
+			m.refreshViewportContent()
+			return nil
+		}
 		if workflowLaunchIsRawScriptAction(action) {
 			m.workflowLaunch.rawScroll = 0
 			m.mode = modeWorkflowRawScript
@@ -117,7 +142,17 @@ func (m model) renderWorkflowLaunch() string {
 	contentWidth := max(40, min(width-4, 120))
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(tuitheme.Default.Palette)
 	muted := lipgloss.NewStyle().Foreground(tuitheme.Default.Muted)
-	lines := []string{titleStyle.Render("Workflow(dynamic workflow: " + workflowLaunchField(result, "Workflow") + ")"), "", result.Title}
+	var lines []string
+	if result.Kind == workflowLaunchKind {
+		lines = []string{titleStyle.Render("Workflow(dynamic workflow: " + workflowLaunchField(result, "Workflow") + ")"), "", result.Title}
+	} else {
+		// Non-workflow confirmations (a pending skill write) show their own
+		// title and fields (M1-54).
+		lines = []string{titleStyle.Render(result.Title)}
+		for _, field := range result.Fields {
+			lines = append(lines, workflowLaunchWrapLine(field.Label+": "+field.Value, contentWidth-4)...)
+		}
+	}
 	if desc := workflowLaunchDescription(result); desc != "" {
 		lines = append(lines, "", desc)
 	}

@@ -92,7 +92,7 @@ func TestHandleCommandShowPrintsProposalDiff(t *testing.T) {
 		"skill: demo",
 		"target: " + skillPath,
 		"original sha256: " + sha256Hex(orig),
-		"proposed sha256: " + sha256Hex([]byte(strings.TrimSpace(proposed))),
+		"proposed sha256: " + sha256Hex([]byte(strings.TrimSpace(proposed)+"\n")),
 		"risk: check wording",
 		"--- original",
 		"+++ proposed",

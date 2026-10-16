@@ -619,3 +619,33 @@ func TestSkillsImproverRegistersNoApplyOrRestoreTool(t *testing.T) {
 		t.Fatal("enabled skills-improver should still expose its proposal tool")
 	}
 }
+
+// TestSkillsImproverRegistersNoOneStepWriteCommand pins M1-55: no plugin
+// command performs the write in one step, so there is no build-reload style
+// shortcut. The confirmation lives in the app layer and always needs a second,
+// explicit user action.
+func TestSkillsImproverRegistersNoOneStepWriteCommand(t *testing.T) {
+	var improver Plugin
+	for _, plugin := range builtins() {
+		if plugin.Manifest().ID == "skills-improver" {
+			improver = plugin
+		}
+	}
+	if improver == nil {
+		t.Fatal("skills-improver should be a builtin plugin")
+	}
+	ctx := Context{
+		DataDir:       t.TempDir(),
+		WorkspaceRoot: t.TempDir(),
+		UserGrants:    NewSessionGrants("skills-improver"),
+	}
+	if provider, ok := improver.(SlashCommandProvider); ok {
+		for _, cmd := range provider.SlashCommands(ctx) {
+			name := strings.ToLower(cmd.Name)
+			if strings.Contains(name, "apply") || strings.Contains(name, "restore") ||
+				strings.Contains(name, "skip") || strings.Contains(name, "force") {
+				t.Fatalf("skills-improver must not register a one-step write command %q", cmd.Name)
+			}
+		}
+	}
+}

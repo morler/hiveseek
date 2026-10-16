@@ -147,6 +147,8 @@ func (s *Service) Dispatch(in Intent) {
 			}
 			s.emit(Event{Kind: EventPluginsManagerUpdated, Plugins: protocolPlugins(s.PluginsForManager())})
 		})
+	case IntentSkillProposalApply, IntentSkillProposalRestore:
+		s.goTracked(func() { s.runSkillProposalDecision(in.SkillProposal) })
 	case IntentRequestHooksManage:
 		s.emitHooksManagerUpdated()
 	case IntentRequestConfigManage:

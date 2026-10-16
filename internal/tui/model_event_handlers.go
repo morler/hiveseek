@@ -138,7 +138,7 @@ func (m *model) handleLocalSubmitResultEvent(ev protocol.Event) tea.Cmd {
 	}
 	if !isEnvironmentInventoryBlock(ev.Text) {
 		m.appendLocalCommandEcho(m.popLocalSubmitCommand())
-		if ev.LocalResult != nil && ev.LocalResult.Kind == "workflow-launch" {
+		if opensConfirmationModal(ev.LocalResult) {
 			m.sawTerminalToolOutcomeThisTurn = true
 			m.removeNoFinalAnswerStatusMessages()
 			m.addLog(logEntry{Kind: role, Source: "system", Summary: ev.Text, Raw: ev.Text})

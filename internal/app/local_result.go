@@ -33,4 +33,17 @@ type LocalResultAction struct {
 	WorkflowScript     string
 	WorkflowSaveAs     string
 	WorkflowScriptPath string
+	// SkillProposal carries a pending skills-improver write for the
+	// confirmation prompt (M1-50).
+	SkillProposal *SkillProposalApproval
+}
+
+// SkillProposalApproval is the app-side copy of the confirmation payload.
+type SkillProposalApproval struct {
+	ID         string
+	Action     string
+	SessionID  string
+	Target     string
+	CurrentSHA string
+	ResultSHA  string
 }

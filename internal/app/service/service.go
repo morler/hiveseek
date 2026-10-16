@@ -51,6 +51,8 @@ const (
 	IntentRequestWorkflowPanel      IntentKind = "request_workflow_panel"
 	IntentCancelWorkflowRun         IntentKind = "cancel_workflow_run"
 	IntentStartWorkflow             IntentKind = "start_workflow"
+	IntentSkillProposalApply        IntentKind = "skill_proposal_apply"
+	IntentSkillProposalRestore      IntentKind = "skill_proposal_restore"
 )
 
 type Intent struct {
@@ -89,6 +91,7 @@ type Intent struct {
 	WorkflowScript     string
 	WorkflowSaveAs     string
 	WorkflowScriptPath string
+	SkillProposal      *app.SkillProposalApproval
 }
 
 type AttachmentInput struct {

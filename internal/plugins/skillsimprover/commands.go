@@ -39,6 +39,11 @@ func HandleCommand(store *Store, line string) (string, bool, error) {
 		out, err := showText(store, fields[2])
 		return out, false, err
 	}
+	if fields[1] == ActionApply || fields[1] == ActionRestore {
+		// The write runs only through the app's confirmation prompt: a bare
+		// command line (agent, script, tool stdin) cannot approve it (M1-50).
+		return "", false, fmt.Errorf("%s <id> needs the confirmation prompt: %s", fields[1], CommandUsage)
+	}
 	return "", false, fmt.Errorf("usage: %s", CommandUsage)
 }
 
@@ -64,7 +69,7 @@ func showText(store *Store, id string) (string, error) {
 		"skill: " + p.Skill,
 		"target: " + p.SkillFilePath,
 		"original sha256: " + p.OriginalSHA256,
-		"proposed sha256: " + sha256Hex([]byte(p.ProposedSkillMD)),
+		"proposed sha256: " + sha256Hex(proposedSkillBytes(p)),
 		"summary: " + p.Summary,
 	}
 	if p.Risk != "" {

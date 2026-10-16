@@ -64,6 +64,9 @@ const (
 	// RejectProposalIDInvalid means the id is not a plain identifier, so it could
 	// escape the proposals directory if used as a file name.
 	RejectProposalIDInvalid = "proposal_id_invalid"
+	// RejectApprovalInvalid means the user approval does not match the proposal
+	// on disk, so nothing may be written (M1-52).
+	RejectApprovalInvalid = "approval_invalid"
 	// RejectLogDamaged means the evidence log holds an unparsable line.
 	RejectLogDamaged = "log_damaged"
 	// RejectRestoreConflict means the target changed after the apply, so putting
@@ -514,13 +517,13 @@ func (s *Store) applyProposalLocked(id string) (Proposal, error) {
 	if err := s.writeProposal(p); err != nil {
 		return Proposal{}, fmt.Errorf("mark proposal applying: %w", err)
 	}
-	if err := writeFileAtomic(p.SkillFilePath, []byte(strings.TrimSpace(p.ProposedSkillMD)+"\n")); err != nil {
+	if err := writeFileAtomic(p.SkillFilePath, proposedSkillBytes(p)); err != nil {
 		return Proposal{}, fmt.Errorf("write target skill: %w", err)
 	}
 	// The applied log is committed last.
 	p.State = StateApplied
 	p.AppliedAt = time.Now().UTC()
-	p.AppliedSkillSHA256 = sha256Hex([]byte(strings.TrimSpace(p.ProposedSkillMD) + "\n"))
+	p.AppliedSkillSHA256 = sha256Hex(proposedSkillBytes(p))
 	if err := s.writeProposal(p); err != nil {
 		return Proposal{}, fmt.Errorf("mark proposal applied: %w", err)
 	}
@@ -932,6 +935,13 @@ func proposalID(p Proposal) string {
 	h := sha256.New()
 	_, _ = fmt.Fprintf(h, "%s\n%s\n%s\n%s\n", p.CreatedAt.Format(time.RFC3339Nano), p.Skill, p.SkillFilePath, p.Summary)
 	return "sp-" + hex.EncodeToString(h.Sum(nil))[:12]
+}
+
+// proposedSkillBytes is the exact byte sequence an apply writes: the proposal
+// text trimmed with one trailing newline. Both the report and the write use it
+// so the hash a user approves is the hash that lands on disk (M1-52).
+func proposedSkillBytes(p Proposal) []byte {
+	return []byte(strings.TrimSpace(p.ProposedSkillMD) + "\n")
 }
 
 func sha256Hex(b []byte) string {

@@ -52,9 +52,38 @@ func protocolLocalResultActions(actions []app.LocalResultAction) []protocol.Loca
 			WorkflowScript:     action.WorkflowScript,
 			WorkflowSaveAs:     action.WorkflowSaveAs,
 			WorkflowScriptPath: action.WorkflowScriptPath,
+			SkillProposal:      protocolSkillProposalApproval(action.SkillProposal),
 		})
 	}
 	return out
+}
+
+func protocolSkillProposalApproval(ap *app.SkillProposalApproval) *protocol.SkillProposalApproval {
+	if ap == nil {
+		return nil
+	}
+	return &protocol.SkillProposalApproval{
+		ID:         ap.ID,
+		Action:     ap.Action,
+		SessionID:  ap.SessionID,
+		Target:     ap.Target,
+		CurrentSHA: ap.CurrentSHA,
+		ResultSHA:  ap.ResultSHA,
+	}
+}
+
+func appSkillProposalApproval(ap *protocol.SkillProposalApproval) *app.SkillProposalApproval {
+	if ap == nil {
+		return nil
+	}
+	return &app.SkillProposalApproval{
+		ID:         ap.ID,
+		Action:     ap.Action,
+		SessionID:  ap.SessionID,
+		Target:     ap.Target,
+		CurrentSHA: ap.CurrentSHA,
+		ResultSHA:  ap.ResultSHA,
+	}
 }
 
 func protocolWorkflowPanelSnapshot(snapshot *app.WorkflowPanelSnapshot) *protocol.WorkflowPanelSnapshot {

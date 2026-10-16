@@ -41,6 +41,7 @@ func (s *Service) DispatchProtocol(in protocol.Intent) {
 		WorkflowScript:     in.WorkflowScript,
 		WorkflowSaveAs:     in.WorkflowSaveAs,
 		WorkflowScriptPath: in.WorkflowScriptPath,
+		SkillProposal:      appSkillProposalApproval(in.SkillProposal),
 		AutoReview:         in.AutoReview,
 		Quiet:              in.Quiet,
 	})
@@ -116,6 +117,10 @@ func serviceIntentKind(kind protocol.IntentKind) IntentKind {
 		return IntentCancelWorkflowRun
 	case protocol.IntentStartWorkflow:
 		return IntentStartWorkflow
+	case protocol.IntentSkillProposalApply:
+		return IntentSkillProposalApply
+	case protocol.IntentSkillProposalRestore:
+		return IntentSkillProposalRestore
 	default:
 		return IntentKind(kind)
 	}

@@ -269,6 +269,9 @@ type LocalResultAction struct {
 	WorkflowScript     string `json:"workflow_script,omitempty"`
 	WorkflowSaveAs     string `json:"workflow_save_as,omitempty"`
 	WorkflowScriptPath string `json:"workflow_script_path,omitempty"`
+	// SkillProposal carries a pending skills-improver write for the
+	// confirmation prompt (M1-50).
+	SkillProposal *SkillProposalApproval `json:"skill_proposal,omitempty"`
 }
 
 type WorkflowPanelSnapshot struct {

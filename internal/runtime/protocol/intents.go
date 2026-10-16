@@ -37,43 +37,46 @@ const (
 	IntentRequestWorkflowPanel      IntentKind = "request_workflow_panel"
 	IntentCancelWorkflowRun         IntentKind = "cancel_workflow_run"
 	IntentStartWorkflow             IntentKind = "start_workflow"
+	IntentSkillProposalApply        IntentKind = "skill_proposal_apply"
+	IntentSkillProposalRestore      IntentKind = "skill_proposal_restore"
 )
 
 type Intent struct {
-	Kind               IntentKind            `json:"kind"`
-	InterruptSource    string                `json:"interrupt_source,omitempty"`
-	Input              string                `json:"input,omitempty"`
-	ClientInputID      string                `json:"client_input_id,omitempty"`
-	HiddenInput        bool                  `json:"hidden_input,omitempty"`
-	Attachments        []AttachmentInput     `json:"attachments,omitempty"`
-	ToolCallID         string                `json:"tool_call_id,omitempty"`
-	UserInput          *UserInputResponse    `json:"user_input,omitempty"`
-	SessionInput       string                `json:"session_input,omitempty"`
-	MessageID          string                `json:"message_id,omitempty"`
-	Model              string                `json:"model,omitempty"`
-	Effort             string                `json:"effort,omitempty"`
-	Thinking           string                `json:"thinking,omitempty"`
-	ApprovalMode       string                `json:"approval_mode,omitempty"`
-	AutoReview         bool                  `json:"auto_review,omitempty"`
-	ViewMode           string                `json:"view_mode,omitempty"`
-	SkillName          string                `json:"skill_name,omitempty"`
-	SkillEnabled       bool                  `json:"skill_enabled,omitempty"`
-	PluginID           string                `json:"plugin_id,omitempty"`
-	PluginEnabled      bool                  `json:"plugin_enabled,omitempty"`
-	HookKey            string                `json:"hook_key,omitempty"`
-	HookEnabled        bool                  `json:"hook_enabled,omitempty"`
-	HooksReviewAction  string                `json:"hooks_review_action,omitempty"`
-	ConfigUpdates      []ConfigSettingUpdate `json:"config_updates,omitempty"`
-	SkillBinding       *SkillBinding         `json:"skill_binding,omitempty"`
-	WorktreeAction     string                `json:"worktree_action,omitempty"`
-	WorkflowRunID      string                `json:"workflow_run_id,omitempty"`
-	WorkflowName       string                `json:"workflow_name,omitempty"`
-	WorkflowArgs       string                `json:"workflow_args,omitempty"`
-	WorkflowResume     string                `json:"workflow_resume,omitempty"`
-	WorkflowTrust      bool                  `json:"workflow_trust,omitempty"`
-	WorkflowScript     string                `json:"workflow_script,omitempty"`
-	WorkflowSaveAs     string                `json:"workflow_save_as,omitempty"`
-	WorkflowScriptPath string                `json:"workflow_script_path,omitempty"`
+	Kind               IntentKind             `json:"kind"`
+	InterruptSource    string                 `json:"interrupt_source,omitempty"`
+	Input              string                 `json:"input,omitempty"`
+	ClientInputID      string                 `json:"client_input_id,omitempty"`
+	HiddenInput        bool                   `json:"hidden_input,omitempty"`
+	Attachments        []AttachmentInput      `json:"attachments,omitempty"`
+	ToolCallID         string                 `json:"tool_call_id,omitempty"`
+	UserInput          *UserInputResponse     `json:"user_input,omitempty"`
+	SessionInput       string                 `json:"session_input,omitempty"`
+	MessageID          string                 `json:"message_id,omitempty"`
+	Model              string                 `json:"model,omitempty"`
+	Effort             string                 `json:"effort,omitempty"`
+	Thinking           string                 `json:"thinking,omitempty"`
+	ApprovalMode       string                 `json:"approval_mode,omitempty"`
+	AutoReview         bool                   `json:"auto_review,omitempty"`
+	ViewMode           string                 `json:"view_mode,omitempty"`
+	SkillName          string                 `json:"skill_name,omitempty"`
+	SkillEnabled       bool                   `json:"skill_enabled,omitempty"`
+	PluginID           string                 `json:"plugin_id,omitempty"`
+	PluginEnabled      bool                   `json:"plugin_enabled,omitempty"`
+	HookKey            string                 `json:"hook_key,omitempty"`
+	HookEnabled        bool                   `json:"hook_enabled,omitempty"`
+	HooksReviewAction  string                 `json:"hooks_review_action,omitempty"`
+	ConfigUpdates      []ConfigSettingUpdate  `json:"config_updates,omitempty"`
+	SkillBinding       *SkillBinding          `json:"skill_binding,omitempty"`
+	WorktreeAction     string                 `json:"worktree_action,omitempty"`
+	WorkflowRunID      string                 `json:"workflow_run_id,omitempty"`
+	WorkflowName       string                 `json:"workflow_name,omitempty"`
+	WorkflowArgs       string                 `json:"workflow_args,omitempty"`
+	WorkflowResume     string                 `json:"workflow_resume,omitempty"`
+	WorkflowTrust      bool                   `json:"workflow_trust,omitempty"`
+	WorkflowScript     string                 `json:"workflow_script,omitempty"`
+	WorkflowSaveAs     string                 `json:"workflow_save_as,omitempty"`
+	WorkflowScriptPath string                 `json:"workflow_script_path,omitempty"`
+	SkillProposal      *SkillProposalApproval `json:"skill_proposal,omitempty"`
 	// Quiet suppresses the EventTurnDone the service emits after handling an
 	// intent. The TUI sets it for intents dispatched mid-turn (e.g. the
 	// Alt+P permission cycle while the agent is busy) so the running turn is
@@ -89,6 +92,18 @@ type ConfigSettingUpdate struct {
 type AttachmentInput struct {
 	Path        string `json:"path"`
 	DisplayName string `json:"display_name,omitempty"`
+}
+
+// SkillProposalApproval is the user's confirmation of one skill write, carried
+// from the confirmation prompt back to the app (M1-50, M1-51). It binds the
+// proposal to the session, the target path and both hashes (M1-52).
+type SkillProposalApproval struct {
+	ID         string `json:"id,omitempty"`
+	Action     string `json:"action,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	Target     string `json:"target,omitempty"`
+	CurrentSHA string `json:"current_sha256,omitempty"`
+	ResultSHA  string `json:"result_sha256,omitempty"`
 }
 
 type SkillBinding struct {

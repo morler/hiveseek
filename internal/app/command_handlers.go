@@ -263,6 +263,9 @@ func (a *App) ExecuteLocalCommand(line string) (CommandExecution, error) {
 		result := buildDoctorLocalResult(a)
 		return CommandExecution{Handled: true, Text: result.PlainText, LocalResult: result}, nil
 	}
+	if res, handled, err := a.skillProposalDecision(trimmed); handled {
+		return res, err
+	}
 	if a.pluginManager != nil {
 		res, handled, err := a.pluginManager.HandleCommand(a.ctx, trimmed)
 		if handled || err != nil {
