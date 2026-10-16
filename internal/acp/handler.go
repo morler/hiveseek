@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/usewhale/whale/internal/agent"
+	"github.com/usewhale/whale/internal/build"
 	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/session"
 	"github.com/usewhale/whale/internal/store"
@@ -169,7 +170,7 @@ func (h *Handler) metaPath(sessionID string) string {
 	if h.metaDir == "" || !isSafeSessionID(sessionID) {
 		return ""
 	}
-	return filepath.Join(h.metaDir, sessionID+".meta.json")
+	return filepath.Join(h.metaDir, core.SanitizeSessionID(sessionID)+".meta.json")
 }
 
 // isSafeSessionID rejects ids that could escape the sessions directory when
@@ -340,7 +341,7 @@ func (h *Handler) handleInitialize(req *RPCRequest) *RPCErrorResponse {
 				Delete: &SessionDeleteCapabilities{},
 			},
 		},
-		AgentInfo: &Implementation{Name: "whale", Title: "Whale", Version: "0.1.0"},
+		AgentInfo: &Implementation{Name: "whale", Title: "Whale", Version: build.CurrentVersion()},
 	}))
 	return nil
 }
@@ -434,18 +435,31 @@ func (h *Handler) handleSessionLoad(req *RPCRequest) *RPCErrorResponse {
 		}
 		h.mu.Lock()
 		// Re-check under lock in case a concurrent load created it first.
-		if _, exists := h.sessions[params.SessionID]; !exists {
+		// Re-check under lock in case a concurrent load created it first.
+		// taken reports whether another load installed its own runtime for this
+		// session while ours was still being built; ours is then unadopted.
+		_, taken := h.sessions[params.SessionID]
+		if !taken {
 			h.sessions[params.SessionID] = &sessionContext{whaleSessionID: params.SessionID, runtime: rt, cwd: cwd, mode: mode, lastUsed: time.Now()}
 		}
 		h.mu.Unlock()
+		if taken {
+			// Our runtime was never adopted, so release it (it may own connected
+			// MCP servers) instead of leaking it.
+			if rt.Close != nil {
+				go rt.Close()
+			}
+		}
 		if evicted := h.evictIfOverLimit(); evicted != nil && evicted.Close != nil {
 			go evicted.Close()
 		}
 		// Persist the resolved cwd/mode so a subsequent load (or a restart where
-		// the sidecar was never written) stays consistent with the runtime we
-		// just built. An already-live session keeps its established runtime, so
-		// we only rewrite the sidecar when we actually adopt this cwd.
-		h.saveSessionMeta(params.SessionID, sessionMeta{Cwd: cwd, Mode: mode})
+		// the sidecar was never written) stays consistent with the runtime we just
+		// built. Only the load that actually installed this runtime rewrites the
+		// sidecar; the loser keeps the winner's established runtime.
+		if !taken {
+			h.saveSessionMeta(params.SessionID, sessionMeta{Cwd: cwd, Mode: mode})
+		}
 	}
 	for _, msg := range messages {
 		if update := h.translateMessage(msg); update != nil {

@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Logger writes log messages to stderr (never stdout, which is reserved for ACP messages).
@@ -273,14 +275,55 @@ func (t *Transport) CancelSession(sessionID string) {
 	}
 }
 
+// ClientCallTimeout bounds how long an outbound request to the ACP client
+// (currently session/request_permission) waits for a response before the call
+// is abandoned and denied. A real user may leave a permission dialog open, so
+// the default is deliberately generous; the bound exists so a client that
+// neither answers nor sends session/cancel cannot wedge its session's turn —
+// and with it that session's prompt mutex — forever.
+var ClientCallTimeout = 10 * time.Minute
+
 // CallClientMethod sends a request to the client on behalf of sessionID and
 // waits for the response. It does NOT read stdin — the dispatcher delivers the
-// response via channel. If the session is cancelled (via CancelSession) while
-// waiting, it returns an error.
+// response via channel. If the session is cancelled (via CancelSession), the
+// deadline fires, or the caller's context ends while waiting, it returns an
+// error.
 func (t *Transport) CallClientMethod(sessionID, method string, params interface{}) (*RPCResponse, error) {
+	return t.CallClientMethodContext(context.Background(), sessionID, method, params)
+}
+
+// CallClientMethodContext is CallClientMethod with a caller-supplied context:
+// cancelling ctx abandons the wait. The cancel hook is registered BEFORE the
+// request is written, so a session/cancel that races the write still reaches
+// this wait (a fast response cannot be lost either — the pending channel is
+// registered before both).
+func (t *Transport) CallClientMethodContext(ctx context.Context, sessionID, method string, params interface{}) (*RPCResponse, error) {
 	id := t.seq.Add(1)
 	respCh := t.GetPendingChannel(id)
 	defer t.RemovePending(id)
+
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("call %s: %w", method, err)
+	}
+
+	// Register this call's cancel under its own id, scoped to its session, so
+	// CancelSession can reach exactly this wait and it deregisters exactly
+	// itself on return — independent of any other concurrent call.
+	cancelCtx, cancel := context.WithCancel(ctx)
+	if ClientCallTimeout > 0 {
+		var stop context.CancelFunc
+		cancelCtx, stop = context.WithTimeout(cancelCtx, ClientCallTimeout)
+		defer stop()
+	}
+	t.callsMu.Lock()
+	t.calls[id] = &outboundCall{sessionID: sessionID, cancel: cancel}
+	t.callsMu.Unlock()
+	defer func() {
+		t.callsMu.Lock()
+		delete(t.calls, id)
+		t.callsMu.Unlock()
+		cancel()
+	}()
 
 	req := struct {
 		JSONRPC string      `json:"jsonrpc"`
@@ -297,26 +340,18 @@ func (t *Transport) CallClientMethod(sessionID, method string, params interface{
 		return nil, fmt.Errorf("call %s: write: %w", method, err)
 	}
 
-	// Register this call's cancel under its own id, scoped to its session, so
-	// CancelSession can reach exactly this wait and it deregisters exactly
-	// itself on return — independent of any other concurrent call.
-	cancelCtx, cancel := context.WithCancel(context.Background())
-	t.callsMu.Lock()
-	t.calls[id] = &outboundCall{sessionID: sessionID, cancel: cancel}
-	t.callsMu.Unlock()
-	defer func() {
-		t.callsMu.Lock()
-		delete(t.calls, id)
-		t.callsMu.Unlock()
-		cancel()
-	}()
-
-	// Wait for the response, cancellation, or transport close.
+	// Wait for the response, cancellation, deadline, or transport close.
 	var raw json.RawMessage
 	var ok bool
 	select {
 	case raw, ok = <-respCh:
 	case <-cancelCtx.Done():
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("call %s: %w", method, err)
+		}
+		if errors.Is(cancelCtx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("call %s: timed out after %s: %w", method, ClientCallTimeout, context.DeadlineExceeded)
+		}
 		return nil, fmt.Errorf("call %s: cancelled", method)
 	}
 	if !ok {

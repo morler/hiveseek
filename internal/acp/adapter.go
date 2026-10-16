@@ -393,6 +393,8 @@ func NewACPApprovalFunc(transport *Transport) policy.ApprovalFunc {
 
 		resp, err := transport.CallClientMethod(req.SessionID, MethodSessionRequestPerm, permReq)
 		if err != nil {
+			// The error text carries the cause (timeout, cancel, transport
+			// closed), so one log line keeps the diagnosis without branching.
 			Logger.Printf("request_permission failed: %v — denying", err)
 			return policy.ApprovalDeny
 		}

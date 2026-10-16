@@ -1901,3 +1901,93 @@ func TestPermissionOptionKindString(t *testing.T) {
 		}
 	}
 }
+
+// TestMetaPathSanitizesSessionID pins the sidecar basename to the same
+// sanitization the session file uses. With the raw id an ACP client could write
+// cwd/mode where nothing looks (session/list derives ids from the .jsonl
+// basename) and session/delete would leave the file behind.
+func TestMetaPathSanitizesSessionID(t *testing.T) {
+	h := &Handler{metaDir: "/sessions"}
+	got := h.metaPath("My Session!")
+	want := filepath.Join("/sessions", core.SanitizeSessionID("My Session!")+".meta.json")
+	if got != want {
+		t.Fatalf("metaPath = %q, want %q", got, want)
+	}
+	if strings.Contains(got, " ") {
+		t.Fatalf("metaPath must not embed the raw session id: %q", got)
+	}
+	if got := h.metaPath("../escape"); got != "" {
+		t.Fatalf("unsafe session id must still yield no meta path, got %q", got)
+	}
+}
+
+// TestSessionLoadReleasesRuntimeWhenAnotherLoadWins covers the losing side of a
+// concurrent session/load race: a runtime built but never installed owns
+// connected MCP servers and must be released, while the winner's runtime stays
+// installed.
+func TestSessionLoadReleasesRuntimeWhenAnotherLoadWins(t *testing.T) {
+	rec := &factoryRecorder{}
+	var mu sync.Mutex
+	built := 0
+	released := make(chan struct{}, 4)
+	winnerClosed := 0
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	h := newHandlerForTest(t, rec)
+	h.SetRuntimeFactory(func(acpSessionID, cwd string, mcps []MCPServer) (*SessionRuntime, error) {
+		mu.Lock()
+		built++
+		mu.Unlock()
+		close(entered)
+		<-release
+		return &SessionRuntime{Close: func() { released <- struct{}{} }}, nil
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.handleRequest(&RPCRequest{
+			JSONRPC: "2.0",
+			ID:      &RequestID{Value: 1},
+			Method:  MethodSessionLoad,
+			Params:  json.RawMessage(`{"sessionId":"sess-race","cwd":"/work"}`),
+		})
+	}()
+	<-entered
+	// A concurrent load installs its own runtime while ours is still building.
+	winner := &SessionRuntime{Close: func() {
+		mu.Lock()
+		winnerClosed++
+		mu.Unlock()
+	}}
+	h.mu.Lock()
+	h.sessions["sess-race"] = &sessionContext{whaleSessionID: "sess-race", runtime: winner, cwd: "/work", mode: "default", lastUsed: time.Now()}
+	h.mu.Unlock()
+	close(release)
+	<-done
+
+	mu.Lock()
+	if built != 1 {
+		mu.Unlock()
+		t.Fatalf("expected exactly one runtime build, got %d", built)
+	}
+	mu.Unlock()
+	select {
+	case <-released:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the unadopted runtime was never released")
+	}
+	select {
+	case <-released:
+		t.Fatal("the unadopted runtime was released more than once")
+	case <-time.After(100 * time.Millisecond):
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if winnerClosed != 0 {
+		t.Fatalf("the adopted runtime must not be closed, got %d", winnerClosed)
+	}
+	if live, ok := h.sessions["sess-race"]; !ok || live.runtime != winner {
+		t.Fatalf("the winner's runtime must stay installed, got %+v", live)
+	}
+}
