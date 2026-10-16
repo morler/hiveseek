@@ -112,10 +112,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 		defer a.active.Delete(sessionID)
 		toolSnapshot, err := a.refreshToolSnapshotForTurn(ctx, opts)
 		if err != nil {
-			emit := func(ev AgentEvent) bool {
-				return sendAgentEvent(ctx, out, ev)
-			}
-			emit(AgentEvent{Type: AgentEventTypeError, Err: err})
+			sendAgentEvent(ctx, out, AgentEvent{Type: AgentEventTypeError, Err: err})
 			return
 		}
 		rt := memory.HydrateRuntime(memory.NewImmutablePrefix(a.buildImmutableSystemBlocksWithTools(toolSnapshot, opts)), history)
@@ -174,32 +171,25 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 			if a.autoCompact {
 				before := compact.EstimateMessagesTokens(rt.BuildProviderHistory())
 				if float64(before)/float64(max(1, a.contextWindow)) > a.compactThresh {
-					summaryCtx := summaryRequestContextFromPrefix(rt.Prefix, rt.RuntimeBlocks())
+					summaryCtx := turnSummaryContext(rt)
 					replacement, info, err := a.compactHistory(ctx, sessionID, history, true, a.hookRunObserver(ctx, out), summaryCtx)
 					if err != nil {
 						emit(AgentEvent{Type: AgentEventTypeError, Err: err})
 						return
 					}
+					info.BeforeEstimate = before
 					if info.Compacted {
 						_ = rt.Log.RewriteWithReason(memory.RewriteReasonCompact, replacement)
 						history = replacement
-						info.BeforeEstimate = before
 						info.AfterEstimate = compact.EstimateMessagesTokens(rt.BuildProviderHistory())
-						if !emit(AgentEvent{
-							Type:    AgentEventTypeContextCompacted,
-							Compact: &info,
-						}) {
-							return
-						}
 					} else {
-						info.BeforeEstimate = before
 						info.AfterEstimate = before
-						if !emit(AgentEvent{
-							Type:    AgentEventTypeContextCompacted,
-							Compact: &info,
-						}) {
-							return
-						}
+					}
+					if !emit(AgentEvent{
+						Type:    AgentEventTypeContextCompacted,
+						Compact: &info,
+					}) {
+						return
 					}
 				}
 			}
@@ -324,11 +314,11 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 					continue
 				}
 				if consecutiveStormRounds >= maxConsecutiveStormRounds {
-					a.forceSummaryAndFinish(ctx, sessionID, history, "repetitive tool-call loop detected", summaryRequestContextFromPrefix(rt.Prefix, rt.RuntimeBlocks()), emit)
+					a.forceSummaryAndFinish(ctx, sessionID, history, "repetitive tool-call loop detected", turnSummaryContext(rt), emit)
 					return
 				}
 				if consecutiveRedundantRounds >= maxConsecutiveRedundantRounds {
-					a.forceSummaryAndFinish(ctx, sessionID, history, "redundant tool-call loop (no progress) detected", summaryRequestContextFromPrefix(rt.Prefix, rt.RuntimeBlocks()), emit)
+					a.forceSummaryAndFinish(ctx, sessionID, history, "redundant tool-call loop (no progress) detected", turnSummaryContext(rt), emit)
 					return
 				}
 				// When the classifier circuit breaker fires after too many
@@ -348,7 +338,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 					continue
 				}
 				if a.maxTurns > 0 && modelTurns >= a.maxTurns {
-					a.forceSummaryAndFinish(ctx, sessionID, history, "turn cap reached", summaryRequestContextFromPrefix(rt.Prefix, rt.RuntimeBlocks()), emit)
+					a.forceSummaryAndFinish(ctx, sessionID, history, "turn cap reached", turnSummaryContext(rt), emit)
 					return
 				}
 				// Approaching the tool-call cap: steer the model to wrap up and
@@ -371,11 +361,11 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 					}
 				}
 				if a.maxToolCalls > 0 && toolCalls >= a.maxToolCalls {
-					a.forceSummaryAndFinish(ctx, sessionID, history, "tool call cap reached", summaryRequestContextFromPrefix(rt.Prefix, rt.RuntimeBlocks()), emit)
+					a.forceSummaryAndFinish(ctx, sessionID, history, "tool call cap reached", turnSummaryContext(rt), emit)
 					return
 				}
 				if a.maxToolIters > 0 && toolIters >= a.maxToolIters {
-					a.forceSummaryAndFinish(ctx, sessionID, history, "tool iteration cap reached", summaryRequestContextFromPrefix(rt.Prefix, rt.RuntimeBlocks()), emit)
+					a.forceSummaryAndFinish(ctx, sessionID, history, "tool iteration cap reached", turnSummaryContext(rt), emit)
 					return
 				}
 				// Backstop only the capless main agent (maxToolIters == 0). A
@@ -383,7 +373,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 				// backstop — already opted into its own ceiling above; honor it
 				// rather than truncating their run early at mainAgentToolIterBackstop.
 				if a.maxToolIters == 0 && toolIters >= mainAgentToolIterBackstop {
-					a.forceSummaryAndFinish(ctx, sessionID, history, "tool iteration backstop reached", summaryRequestContextFromPrefix(rt.Prefix, rt.RuntimeBlocks()), emit)
+					a.forceSummaryAndFinish(ctx, sessionID, history, "tool iteration backstop reached", turnSummaryContext(rt), emit)
 					return
 				}
 				if turnState.hasPending() {
@@ -485,6 +475,10 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 	}()
 
 	return out, nil
+}
+
+func turnSummaryContext(rt *memory.RuntimeState) summaryRequestContext {
+	return summaryRequestContextFromPrefix(rt.Prefix, rt.RuntimeBlocks())
 }
 
 func isServiceShutdown(ctx context.Context) bool {
