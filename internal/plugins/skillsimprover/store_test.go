@@ -834,6 +834,40 @@ func seedApplyingProposal(t *testing.T, store *Store, workspace string, want str
 	}
 	return seeded, skillPath
 }
+func TestSaveProposalRejectsInvalidFrontmatter(t *testing.T) {
+	workspace := t.TempDir()
+	skillPath := writeTestSkill(t, workspace, "demo", "old body")
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	orig, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]string{
+		"missing frontmatter":  "# Demo\n\nbody\n",
+		"unclosed frontmatter": "---\nname: demo\ndescription: Demo skill\n\n# Demo\n",
+		"name mismatch":        "---\nname: other\ndescription: Demo skill\n---\n\n# Other\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := store.SaveProposal(Proposal{
+				Skill:           "demo",
+				SkillFilePath:   skillPath,
+				OriginalSHA256:  sha256Hex(orig),
+				Summary:         "change",
+				ProposedSkillMD: body,
+			})
+			if err == nil {
+				t.Fatal("a proposal with an invalid frontmatter must not be saved")
+			}
+		})
+	}
+	if proposals, err := store.ListProposals(); err != nil || len(proposals) != 0 {
+		t.Fatalf("no proposal may be written, got %d (err=%v)", len(proposals), err)
+	}
+	if got, err := os.ReadFile(skillPath); err != nil || string(got) != string(orig) {
+		t.Fatalf("the target must stay untouched, got %q (err=%v)", string(got), err)
+	}
+}
 
 func TestInterruptedApplyCompletesWithoutRewritingTarget(t *testing.T) {
 	workspace := t.TempDir()
