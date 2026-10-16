@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/usewhale/whale/internal/core"
 )
@@ -186,5 +188,51 @@ func TestCompactToolInput(t *testing.T) {
 				t.Errorf("expected result to exclude %q, got %q", tt.excludes, result)
 			}
 		})
+	}
+}
+
+// TestNewClassifierBaseURLPrecedence pins the endpoint precedence: an explicit
+// config value (the app passes its resolved api.base_url) beats the env
+// override, which beats the public default. Auto-review must not bypass a
+// configured gateway/proxy: the default endpoint is unreachable there, so every
+// review would fail closed and block writes.
+func TestNewClassifierBaseURLPrecedence(t *testing.T) {
+	t.Setenv("DEEPSEEK_BASE_URL", "https://env.example/v1/")
+	if got := NewClassifier(ClassifierConfig{BaseURL: "https://cfg.example/v1/"}).baseURL; got != "https://cfg.example/v1" {
+		t.Fatalf("configured base URL must win, got %q", got)
+	}
+	if got := NewClassifier(ClassifierConfig{}).baseURL; got != "https://env.example/v1" {
+		t.Fatalf("env base URL must be the fallback, got %q", got)
+	}
+	t.Setenv("DEEPSEEK_BASE_URL", "")
+	if got := NewClassifier(ClassifierConfig{}).baseURL; got != defaultClassifierBaseURL {
+		t.Fatalf("public default expected, got %q", got)
+	}
+}
+
+// TestTruncateStringKeepsRuneBoundary guards the classifier transcript against
+// being cut mid-rune: an invalid slice JSON-encodes as U+FFFD and hands the
+// classifier a mangled command.
+func TestTruncateStringKeepsRuneBoundary(t *testing.T) {
+	got := truncateString(strings.Repeat("中", 10), 7)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated string is not valid UTF-8: %q", got)
+	}
+	if want := strings.Repeat("中", 2) + "..."; got != want {
+		t.Fatalf("truncateString = %q, want %q", got, want)
+	}
+	if got, want := truncateString("abc", 3), "abc"; got != want {
+		t.Fatalf("under the limit must pass through: got %q, want %q", got, want)
+	}
+	if got, want := truncateString("中文", 0), "..."; got != want {
+		t.Fatalf("non-positive limit must keep only the ellipsis: got %q, want %q", got, want)
+	}
+}
+
+// TestDetectOSReportsHostOS documents that the OS hint handed to the classifier
+// reflects the host it runs on, not a hardcoded platform.
+func TestDetectOSReportsHostOS(t *testing.T) {
+	if got := detectOS(); got != runtime.GOOS {
+		t.Fatalf("detectOS = %q, want %q", got, runtime.GOOS)
 	}
 }

@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/usewhale/whale/internal/core"
 )
@@ -146,7 +147,16 @@ func truncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	if maxLen <= 0 {
+		return "..."
+	}
+	// Cut on a rune boundary: a byte-wise cut can split a multi-byte character
+	// (CJK commands, paths) and hand the classifier an invalid UTF-8 fragment.
+	cut := maxLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }
 
 func itoa(n int) string {

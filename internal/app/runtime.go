@@ -125,6 +125,7 @@ func (a *App) ensureAgent() (*agent.Agent, error) {
 				Enabled:     a.cfg.AutoReviewEnabled,
 				Model:       a.cfg.AutoReviewModel,
 				APIKey:      a.apiKey,
+				BaseURL:     a.cfg.APIBaseURL,
 				TimeoutMS:   a.cfg.AutoReviewTimeoutMS,
 				AllowRules:  a.cfg.AutoReviewAllowRules,
 				DenyRules:   a.cfg.AutoReviewDenyRules,

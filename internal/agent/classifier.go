@@ -49,7 +49,15 @@ func NewClassifier(cfg ClassifierConfig) *Classifier {
 	if apiKey == "" {
 		apiKey = strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY"))
 	}
-	baseURL := strings.TrimSpace(os.Getenv("DEEPSEEK_BASE_URL"))
+	// Precedence mirrors the main provider path: explicit config first (the app
+	// passes its resolved api.base_url), then the env override, then the public
+	// endpoint. Skipping the config layer would make auto-review bypass a
+	// configured gateway/proxy, which either blocks every review (the default
+	// endpoint is unreachable) or egresses to api.deepseek.com with the user's key.
+	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = strings.TrimRight(strings.TrimSpace(os.Getenv("DEEPSEEK_BASE_URL")), "/")
+	}
 	if baseURL == "" {
 		baseURL = defaultClassifierBaseURL
 	}

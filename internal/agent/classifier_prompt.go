@@ -3,6 +3,7 @@ package agent
 import (
 	_ "embed"
 	"fmt"
+	"runtime"
 	"strings"
 )
 
@@ -20,6 +21,12 @@ type ClassifierConfig struct {
 	Model string
 	// APIKey is the DeepSeek API key. Empty falls back to DEEPSEEK_API_KEY env var.
 	APIKey string
+	// BaseURL overrides the classifier endpoint. Empty falls back to the
+	// DEEPSEEK_BASE_URL env var, then to the public DeepSeek endpoint. The app
+	// passes the same resolved base URL as the main provider, so auto-review
+	// never bypasses a configured gateway or fails closed on a network that only
+	// reaches that gateway.
+	BaseURL string
 	// AllowRules are additional allow rules (additive to defaults).
 	AllowRules []string
 	// DenyRules are additional deny rules (additive to defaults).
@@ -91,5 +98,5 @@ Respond with ONLY a JSON object following the output format.
 
 // detectOS returns a short OS identifier for the classifier prompt.
 func detectOS() string {
-	return "linux/macos" // simplified; could use runtime.GOOS
+	return runtime.GOOS
 }

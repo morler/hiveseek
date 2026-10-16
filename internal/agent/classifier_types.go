@@ -42,9 +42,6 @@ type ClassifierReview struct {
 	DurationMS int64
 	// FromAllowlist is true when the tool was auto-allowed without a model call.
 	FromAllowlist bool
-	// FromInCWD is true when the tool was allowed because it operates inside the
-	// workspace directory (in-project file writes/edits only).
-	FromInCWD bool
 }
 
 // ClassifierReviewEvent is emitted via AgentEvent for TUI display and telemetry.

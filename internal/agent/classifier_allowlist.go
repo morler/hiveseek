@@ -46,15 +46,3 @@ var classifierAllowlist = map[string]bool{
 func isClassifierAllowlisted(toolName string) bool {
 	return classifierAllowlist[toolName]
 }
-
-// isInCWDWrite returns true when a write/edit/multi_edit operates entirely
-// inside the workspace root. Translated from Claude Code's acceptEdits fast path
-// (Tier 2: in-project file operations).
-//
-// Safe assumptions:
-//   - Writing inside the workspace is user-intended development work.
-//   - Writing outside the workspace (e.g. ~/.ssh, /etc) is suspicious.
-//   - This is a coarse-grained check; the classifier handles edge cases.
-func isInCWDWrite(toolName string, cwd string) bool {
-	return cwd != ""
-}
