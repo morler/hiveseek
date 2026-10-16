@@ -790,3 +790,289 @@ func TestProposalStateDefaultsForOlderFiles(t *testing.T) {
 		t.Fatalf("legacy open proposal state = %q, want %q", got, StateProposed)
 	}
 }
+
+// seedApplyingProposal saves a proposal, then rewrites it to the applying state
+// and puts want onto the target: the state an interrupted apply leaves behind.
+func seedApplyingProposal(t *testing.T, store *Store, workspace string, want string) (Proposal, string) {
+	t.Helper()
+	skillPath := writeTestSkill(t, workspace, "demo", "old body")
+	orig, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := store.SaveProposal(Proposal{
+		Skill:           "demo",
+		SkillFilePath:   skillPath,
+		OriginalSHA256:  sha256Hex(orig),
+		Summary:         "change",
+		ProposedSkillMD: skillMarkdown("demo", "new body"),
+	})
+	if err != nil {
+		t.Fatalf("save proposal: %v", err)
+	}
+	// Spell the target through a symlink below the data dir, so the apply state
+	// points at a path a crash could have recorded. Seed the backup the way a
+	// real apply does, then leave the transaction applying with want on target.
+	probe := filepath.Join(filepath.Dir(store.dataDir), "probe")
+	if err := os.Symlink(workspace, probe); err != nil {
+		t.Fatal(err)
+	}
+	p.SkillFilePath = filepath.Join(probe, ".whale", "skills", "demo", "SKILL.md")
+	if err := store.writeOriginalBackupInto(&p, orig); err != nil {
+		t.Fatal(err)
+	}
+	p.State = StateApplying
+	if err := store.writeProposal(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte(want), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seeded, err := store.ReadProposal(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return seeded, skillPath
+}
+
+func TestInterruptedApplyCompletesWithoutRewritingTarget(t *testing.T) {
+	workspace := t.TempDir()
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	proposed := strings.TrimSpace(skillMarkdown("demo", "new body")) + "\n"
+	p, skillPath := seedApplyingProposal(t, store, workspace, proposed)
+
+	recovered, err := store.ApplyProposal(p.ID)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if recovered.State != StateApplied {
+		t.Fatalf("recovered state = %q, want %q", recovered.State, StateApplied)
+	}
+	fi, err := os.Stat(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mtime := fi.ModTime()
+	// A second apply must not touch the already-written target again.
+	if _, err := store.ApplyProposal(p.ID); err == nil {
+		t.Fatal("an applied proposal must not apply twice")
+	}
+	fi2, err := os.Stat(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fi2.ModTime().Equal(mtime) {
+		t.Fatalf("target was rewritten by the second call: %v -> %v", mtime, fi2.ModTime())
+	}
+	got, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != proposed {
+		t.Fatalf("target = %q, want the proposed body", got)
+	}
+}
+
+func TestInterruptedApplyReportsRevertedTarget(t *testing.T) {
+	workspace := t.TempDir()
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	p, skillPath := seedApplyingProposal(t, store, workspace, skillMarkdown("demo", "old body"))
+
+	recovered, err := store.ApplyProposal(p.ID)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if recovered.State != StateRestored {
+		t.Fatalf("state = %q, want %q", recovered.State, StateRestored)
+	}
+	got, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != skillMarkdown("demo", "old body") {
+		t.Fatalf("target = %q, want the untouched original", got)
+	}
+	if recovered.RestoredAt.IsZero() {
+		t.Fatal("a restore must record when it happened")
+	}
+}
+
+func TestInterruptedApplyRejectsUnrecognisedTarget(t *testing.T) {
+	workspace := t.TempDir()
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	p, _ := seedApplyingProposal(t, store, workspace, "edited by hand")
+
+	_, err := store.ApplyProposal(p.ID)
+	if rejectCode(err) != RejectRecoveryConflict {
+		t.Fatalf("want %s, got %v", RejectRecoveryConflict, err)
+	}
+}
+
+func TestPruneProposalRejectsWithoutTouchingTarget(t *testing.T) {
+	workspace := t.TempDir()
+	skillPath := writeTestSkill(t, workspace, "demo", "old body")
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	orig, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := store.SaveProposal(Proposal{
+		Skill:           "demo",
+		SkillFilePath:   skillPath,
+		OriginalSHA256:  sha256Hex(orig),
+		Summary:         "change",
+		ProposedSkillMD: skillMarkdown("demo", "new body"),
+	})
+	if err != nil {
+		t.Fatalf("save proposal: %v", err)
+	}
+	rejected, err := store.PruneProposal(p.ID)
+	if err != nil {
+		t.Fatalf("reject proposal: %v", err)
+	}
+	if rejected.State != StateRejected {
+		t.Fatalf("state = %q, want %q", rejected.State, StateRejected)
+	}
+	after, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(orig) {
+		t.Fatalf("a rejected proposal must not touch the target, got %q", string(after))
+	}
+	if _, err := store.ApplyProposal(p.ID); err == nil {
+		t.Fatal("a rejected proposal must not apply")
+	}
+}
+
+func TestRestoreProposalPutsOriginalBack(t *testing.T) {
+	workspace := t.TempDir()
+	skillPath := writeTestSkill(t, workspace, "demo", "old body")
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	orig, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := store.SaveProposal(Proposal{
+		Skill:           "demo",
+		SkillFilePath:   skillPath,
+		OriginalSHA256:  sha256Hex(orig),
+		Summary:         "change",
+		ProposedSkillMD: skillMarkdown("demo", "new body"),
+	})
+	if err != nil {
+		t.Fatalf("save proposal: %v", err)
+	}
+	if _, err := store.ApplyProposal(p.ID); err != nil {
+		t.Fatalf("apply proposal: %v", err)
+	}
+	restored, err := store.RestoreProposal(p.ID)
+	if err != nil {
+		t.Fatalf("restore proposal: %v", err)
+	}
+	if restored.State != StateRestored {
+		t.Fatalf("state = %q, want %q", restored.State, StateRestored)
+	}
+	got, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(orig) {
+		t.Fatalf("target = %q, want the original bytes", string(got))
+	}
+	if _, err := store.RestoreProposal(p.ID); err != nil {
+		t.Fatalf("restoring an already restored proposal must be a no-op, got %v", err)
+	}
+}
+
+func TestRestoreProposalRefusesToOverwriteLaterEdits(t *testing.T) {
+	workspace := t.TempDir()
+	skillPath := writeTestSkill(t, workspace, "demo", "old body")
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	orig, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := store.SaveProposal(Proposal{
+		Skill:           "demo",
+		SkillFilePath:   skillPath,
+		OriginalSHA256:  sha256Hex(orig),
+		Summary:         "change",
+		ProposedSkillMD: skillMarkdown("demo", "new body"),
+	})
+	if err != nil {
+		t.Fatalf("save proposal: %v", err)
+	}
+	if _, err := store.ApplyProposal(p.ID); err != nil {
+		t.Fatalf("apply proposal: %v", err)
+	}
+	edited := skillMarkdown("demo", "edited after the apply")
+	if err := os.WriteFile(skillPath, []byte(edited), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.RestoreProposal(p.ID)
+	if rejectCode(err) != RejectRestoreConflict {
+		t.Fatalf("want %s, got %v", RejectRestoreConflict, err)
+	}
+	if got, _ := os.ReadFile(skillPath); string(got) != edited {
+		t.Fatalf("a refused restore must leave the target alone, got %q", string(got))
+	}
+}
+
+func TestApplyRefusesProposalWithoutTransactionMaterial(t *testing.T) {
+	workspace := t.TempDir()
+	skillPath := writeTestSkill(t, workspace, "demo", "old body")
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	if err := securefs.MkdirPrivate(store.proposalsDir()); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"id":"sp-legacy","skill":"demo","skill_file_path":` + strconv.Quote(skillPath) +
+		`,"summary":"legacy","proposed_skill_md":"---\nname: demo\ndescription: Demo skill\n---\n\n# Demo\n\nnew body\n"}`
+	if err := securefs.WritePrivateFile(filepath.Join(store.proposalsDir(), "sp-legacy.json"), []byte(legacy)); err != nil {
+		t.Fatal(err)
+	}
+	_, err := store.ApplyProposal("sp-legacy")
+	if rejectCode(err) != RejectProposalIncomplete {
+		t.Fatalf("want %s, got %v", RejectProposalIncomplete, err)
+	}
+	got, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "old body") {
+		t.Fatalf("a refused legacy apply must not touch the target, got %q", string(got))
+	}
+}
+
+func TestUnusableInputsAreRefusedWithCodes(t *testing.T) {
+	workspace := t.TempDir()
+	store := NewStore(filepath.Join(t.TempDir(), "skills-improver"), workspace)
+	writeTestSkill(t, workspace, "demo", "old body")
+	if err := securefs.MkdirPrivate(store.proposalsDir()); err != nil {
+		t.Fatal(err)
+	}
+	// Unknown schema, damaged JSON and an id that would escape the directory.
+	future := `{"schema_version": 99, "id": "sp-future", "skill": "demo"}`
+	damaged := `{"id": "sp-damaged", `
+	if err := securefs.WritePrivateFile(filepath.Join(store.proposalsDir(), "sp-future.json"), []byte(future)); err != nil {
+		t.Fatal(err)
+	}
+	if err := securefs.WritePrivateFile(filepath.Join(store.proposalsDir(), "sp-damaged.json"), []byte(damaged)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReadProposal("sp-future"); rejectCode(err) != RejectProposalSchemaUnsupported {
+		t.Fatalf("want %s, got %v", RejectProposalSchemaUnsupported, err)
+	}
+	if _, err := store.ReadProposal("sp-damaged"); rejectCode(err) != RejectProposalDamaged {
+		t.Fatalf("want %s, got %v", RejectProposalDamaged, err)
+	}
+	if _, err := store.ReadProposal("../../../etc/passwd"); rejectCode(err) != RejectProposalIDInvalid {
+		t.Fatalf("want %s, got %v", RejectProposalIDInvalid, err)
+	}
+	if err := securefs.WritePrivateFile(store.evidencePath(), []byte("{\"id\":\"ev-1\"}\nnot json\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ListEvidence("", 5); rejectCode(err) != RejectLogDamaged {
+		t.Fatalf("want %s, got %v", RejectLogDamaged, err)
+	}
+}

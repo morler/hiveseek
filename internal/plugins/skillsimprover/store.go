@@ -29,10 +29,16 @@ const (
 	StateProposed = "proposed"
 	StateApplying = "applying"
 	StateApplied  = "applied"
+	StateRejected = "rejected"
+	StateRestored = "restored"
 )
 
-// Rejection codes for skill write targets. Callers distinguish a refused write by
-// code instead of matching error text.
+// proposalSchemaVersion is the schema of the files this build writes. Files
+// without the field are older and still readable.
+const proposalSchemaVersion = 1
+
+// Rejection codes for skill write targets and unusable proposal files. Callers
+// distinguish a refused write by code instead of matching error text.
 const (
 	// RejectTargetOutsideProjectSkillRoots means the target is not inside the
 	// project-level `.whale/skills` or `.agents/skills` roots.
@@ -42,6 +48,25 @@ const (
 	RejectTargetHasSymlink = "target_has_symlink"
 	// RejectTargetNotRegularFile means the target is not an existing regular file.
 	RejectTargetNotRegularFile = "target_not_regular_file"
+	// RejectProposalSchemaUnsupported means the proposal file declares a schema
+	// this build does not know.
+	RejectProposalSchemaUnsupported = "proposal_schema_unsupported"
+	// RejectProposalDamaged means the proposal file cannot be parsed.
+	RejectProposalDamaged = "proposal_damaged"
+	// RejectProposalIncomplete means the proposal lacks the material an apply or
+	// a restore needs, such as the recorded original hash or the backup.
+	RejectProposalIncomplete = "proposal_incomplete"
+	// RejectProposalIDInvalid means the id is not a plain identifier, so it could
+	// escape the proposals directory if used as a file name.
+	RejectProposalIDInvalid = "proposal_id_invalid"
+	// RejectLogDamaged means the evidence log holds an unparsable line.
+	RejectLogDamaged = "log_damaged"
+	// RejectRestoreConflict means the target changed after the apply, so putting
+	// the original back would discard a human edit.
+	RejectRestoreConflict = "restore_conflict"
+	// RejectRecoveryConflict means an interrupted apply left a target that matches
+	// neither the original nor the proposed bytes.
+	RejectRecoveryConflict = "recovery_conflict"
 )
 
 // RejectError is a refused write target carrying a stable code.
@@ -54,6 +79,23 @@ func (e *RejectError) Error() string { return e.Code + ": " + e.Reason }
 
 func reject(code, format string, args ...any) error {
 	return &RejectError{Code: code, Reason: fmt.Sprintf(format, args...)}
+}
+
+// restoreOriginalBytes puts the recorded original back on the target. The backup
+// is verified against the recorded hash first, so a damaged backup never lands.
+func (s *Store) restoreOriginalBytes(p Proposal) error {
+	path := strings.TrimSpace(p.OriginalBackupPath)
+	if path == "" {
+		return reject(RejectProposalIncomplete, "proposal %s has no original backup", p.ID)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return reject(RejectProposalIncomplete, "read original backup for %s: %v", p.ID, err)
+	}
+	if sha256Hex(b) != p.OriginalSHA256 {
+		return reject(RejectProposalIncomplete, "original backup for %s no longer matches the recorded hash", p.ID)
+	}
+	return writeFileAtomic(p.SkillFilePath, b)
 }
 
 type Store struct {
@@ -77,6 +119,7 @@ type Evidence struct {
 }
 
 type Proposal struct {
+	SchemaVersion  int       `json:"schema_version,omitempty"`
 	ID             string    `json:"id"`
 	CreatedAt      time.Time `json:"created_at"`
 	Skill          string    `json:"skill"`
@@ -92,6 +135,7 @@ type Proposal struct {
 	AppliedAt          time.Time `json:"applied_at,omitempty"`
 	AppliedSkillSHA256 string    `json:"applied_skill_sha256,omitempty"`
 	State              string    `json:"state,omitempty"`
+	RestoredAt         time.Time `json:"restored_at,omitempty"`
 }
 
 // effectiveState resolves the state of a proposal written before the state
@@ -270,6 +314,7 @@ func (s *Store) SaveProposal(p Proposal) (Proposal, error) {
 	p.CreatedAt = time.Now().UTC()
 	p.ID = proposalID(p)
 	p.State = StateProposed
+	p.SchemaVersion = proposalSchemaVersion
 	if err := s.writeProposal(p); err != nil {
 		return Proposal{}, fmt.Errorf("write proposal: %w", err)
 	}
@@ -300,9 +345,10 @@ func (s *Store) ListProposals() ([]Proposal, error) {
 }
 
 func (s *Store) ReadProposal(id string) (Proposal, error) {
-	id = cleanID(id)
-	if id == "" {
-		return Proposal{}, fmt.Errorf("proposal id is required")
+	// The id becomes a file name, so anything that is not already a plain
+	// identifier is refused instead of being silently rewritten (M1-21).
+	if id == "" || cleanID(id) != strings.TrimSpace(id) {
+		return Proposal{}, reject(RejectProposalIDInvalid, "invalid proposal id %q", id)
 	}
 	b, err := os.ReadFile(filepath.Join(s.proposalsDir(), id+".json"))
 	if err != nil {
@@ -310,7 +356,10 @@ func (s *Store) ReadProposal(id string) (Proposal, error) {
 	}
 	var p Proposal
 	if err := json.Unmarshal(b, &p); err != nil {
-		return Proposal{}, err
+		return Proposal{}, reject(RejectProposalDamaged, "proposal %s is unreadable: %v", id, err)
+	}
+	if p.SchemaVersion > proposalSchemaVersion {
+		return Proposal{}, reject(RejectProposalSchemaUnsupported, "proposal %s declares schema_version %d, this build understands %d", id, p.SchemaVersion, proposalSchemaVersion)
 	}
 	return p, nil
 }
@@ -320,7 +369,14 @@ func (s *Store) ApplyProposal(id string) (Proposal, error) {
 	if err != nil {
 		return Proposal{}, err
 	}
-	if state := p.effectiveState(); state != StateProposed {
+	switch state := p.effectiveState(); state {
+	case StateProposed:
+		// continue below
+	case StateApplying:
+		// An earlier apply was interrupted between the state commit and the
+		// applied log; settle it before doing anything new (M1-16).
+		return s.recoverInterruptedApply(p)
+	default:
 		return Proposal{}, fmt.Errorf("proposal is %s, not proposed", state)
 	}
 	if strings.HasPrefix(p.SkillFilePath, "plugin://") {
@@ -328,6 +384,11 @@ func (s *Store) ApplyProposal(id string) (Proposal, error) {
 	}
 	if err := validateSkillContent(p.Skill, p.ProposedSkillMD); err != nil {
 		return Proposal{}, err
+	}
+	// A proposal written before the transaction fields existed carries no
+	// recoverable original, so it is not applied (M1-21b).
+	if p.SchemaVersion == 0 || strings.TrimSpace(p.OriginalSHA256) == "" {
+		return Proposal{}, reject(RejectProposalIncomplete, "proposal %s predates backups and has no transaction material; re-verify and re-save it before applying", p.ID)
 	}
 	if err := requireKnownSkillPath(s.workspaceRoot, p.Skill, p.SkillFilePath); err != nil {
 		return Proposal{}, err
@@ -362,6 +423,57 @@ func (s *Store) ApplyProposal(id string) (Proposal, error) {
 	return p, nil
 }
 
+// recoverInterruptedApply finishes or undoes an apply that stopped after the
+// applying state was committed. It decides from the target bytes alone, so it
+// never writes the same change twice (M1-16, M1-17).
+func (s *Store) recoverInterruptedApply(p Proposal) (Proposal, error) {
+	current, err := os.ReadFile(p.SkillFilePath)
+	if err != nil {
+		return Proposal{}, fmt.Errorf("read target skill: %w", err)
+	}
+	proposed := []byte(strings.TrimSpace(p.ProposedSkillMD) + "\n")
+	proposedSHA := sha256Hex(proposed)
+	switch sha256Hex(current) {
+	case proposedSHA:
+		// The replace completed; only the applied log was lost.
+		p.State = StateApplied
+		p.AppliedAt = time.Now().UTC()
+		p.AppliedSkillSHA256 = proposedSHA
+		if err := s.writeProposal(p); err != nil {
+			return Proposal{}, fmt.Errorf("mark proposal applied: %w", err)
+		}
+		return p, nil
+	case p.OriginalSHA256:
+		if err := s.restoreOriginalBytes(p); err != nil {
+			return Proposal{}, err
+		}
+		p.State = StateRestored
+		p.RestoredAt = time.Now().UTC()
+		if err := s.writeProposal(p); err != nil {
+			return Proposal{}, fmt.Errorf("mark proposal restored: %w", err)
+		}
+		return p, nil
+	default:
+		return Proposal{}, reject(RejectRecoveryConflict, "target %s matches neither the original nor the proposed bytes; resolve it by hand", p.SkillFilePath)
+	}
+}
+
+// PruneProposal marks a proposal rejected. Nothing is written to the target.
+func (s *Store) PruneProposal(id string) (Proposal, error) {
+	p, err := s.ReadProposal(id)
+	if err != nil {
+		return Proposal{}, err
+	}
+	if state := p.effectiveState(); state == StateApplied || state == StateApplying {
+		return Proposal{}, fmt.Errorf("proposal is %s and cannot be rejected", state)
+	}
+	p.State = StateRejected
+	if err := s.writeProposal(p); err != nil {
+		return Proposal{}, fmt.Errorf("mark proposal rejected: %w", err)
+	}
+	return p, nil
+}
+
 func (s *Store) readEvidence() ([]Evidence, error) {
 	f, err := os.Open(s.evidencePath())
 	if err != nil {
@@ -376,12 +488,14 @@ func (s *Store) readEvidence() ([]Evidence, error) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		var ev Evidence
-		if err := json.Unmarshal(scanner.Bytes(), &ev); err == nil {
-			out = append(out, ev)
+		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
+			// A damaged log stops the read instead of silently dropping lines.
+			return nil, reject(RejectLogDamaged, "evidence log line is unreadable: %v", err)
 		}
+		out = append(out, ev)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, reject(RejectLogDamaged, "read evidence log: %v", err)
 	}
 	return out, nil
 }
@@ -438,6 +552,48 @@ func validateSkillContent(expectedName, content string) error {
 		return fmt.Errorf("proposed skill name mismatch: got %s want %s", s.Name, expectedName)
 	}
 	return nil
+}
+
+// RestoreProposal puts the recorded original back and marks the proposal
+// restored. The target must still hold the bytes this apply wrote: anything else
+// is a later edit and is refused rather than overwritten (M1-20).
+func (s *Store) RestoreProposal(id string) (Proposal, error) {
+	p, err := s.ReadProposal(id)
+	if err != nil {
+		return Proposal{}, err
+	}
+	switch state := p.effectiveState(); state {
+	case StateApplied:
+		// continue below
+	case StateRestored:
+		return p, nil // already restored; nothing to write
+	case StateApplying:
+		return s.recoverInterruptedApply(p)
+	default:
+		return Proposal{}, fmt.Errorf("proposal is %s and has nothing to restore", state)
+	}
+	if strings.TrimSpace(p.AppliedSkillSHA256) == "" {
+		return Proposal{}, reject(RejectProposalIncomplete, "proposal %s records no applied hash, so a restore cannot be verified", p.ID)
+	}
+	if err := requireKnownSkillPath(s.workspaceRoot, p.Skill, p.SkillFilePath); err != nil {
+		return Proposal{}, err
+	}
+	current, err := os.ReadFile(p.SkillFilePath)
+	if err != nil {
+		return Proposal{}, fmt.Errorf("read target skill: %w", err)
+	}
+	if sha256Hex(current) != p.AppliedSkillSHA256 {
+		return Proposal{}, reject(RejectRestoreConflict, "target %s no longer holds the applied bytes; refusing to overwrite the newer content", p.SkillFilePath)
+	}
+	if err := s.restoreOriginalBytes(p); err != nil {
+		return Proposal{}, err
+	}
+	p.State = StateRestored
+	p.RestoredAt = time.Now().UTC()
+	if err := s.writeProposal(p); err != nil {
+		return Proposal{}, fmt.Errorf("mark proposal restored: %w", err)
+	}
+	return p, nil
 }
 
 func requireKnownSkillPath(workspaceRoot, skillName, path string) error {
@@ -623,10 +779,12 @@ func normalizedExistingPath(path string) (string, error) {
 		return "", err
 	}
 	resolved, err := filepath.EvalSymlinks(abs)
-	if err == nil {
-		abs = resolved
+	if err != nil {
+		// Fail closed: an unresolvable target is never written through the
+		// caller's spelling (M1-04).
+		return "", reject(RejectTargetOutsideProjectSkillRoots, "resolve target path %s: %v", abs, err)
 	}
-	return filepath.Clean(abs), nil
+	return filepath.Clean(resolved), nil
 }
 
 func evidenceID(ev Evidence) string {
