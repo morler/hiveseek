@@ -34,7 +34,7 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 	var appRef *App
 	runtimeInit, err := initAppRuntime(cfg, sessionInit, toolInit, workspaceRoot, start.Worktree.Path, func() string {
 		if appRef != nil {
-			return appRef.sessionID
+			return appRef.SessionID()
 		}
 		return sessionInit.sessionID
 	}, func(req policy.ApprovalRequest) policy.ApprovalDecision {

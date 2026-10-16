@@ -77,7 +77,7 @@ func (a *App) rebuildTaskRuntimeLocked() error {
 			WorkspaceRoot: workspace.WorkspaceRoot,
 			WorktreeRoot:  workspace.WorktreeRoot,
 		})
-		toolset.SetExecBoundaryApproval(func() string { return a.sessionID }, func(req policy.ApprovalRequest) policy.ApprovalDecision {
+		toolset.SetExecBoundaryApproval(a.sessionIDFunc(), func(req policy.ApprovalRequest) policy.ApprovalDecision {
 			a.approvalMu.Lock()
 			defer a.approvalMu.Unlock()
 			if a.autoAcceptPermissions {
@@ -110,7 +110,7 @@ func (a *App) rebuildTaskRuntimeLocked() error {
 		ParentPolicy:               a.permissionPolicy,
 		MessageStore:               a.msgStore,
 		SessionsDir:                a.sessionsDir,
-		ParentSessionIDFunc:        func() string { return a.sessionID },
+		ParentSessionIDFunc:        a.sessionIDFunc(),
 		WorkspaceRoot:              a.workspaceRoot,
 		MemoryEnabled:              cfg.MemoryEnabled,
 		MemoryMaxChars:             cfg.MemoryMaxChars,
@@ -150,7 +150,7 @@ func (a *App) rebuildTaskRuntimeLocked() error {
 	a.workflowTools = nil
 	if cfg.WorkflowsEnabled {
 		a.workflowTools = []core.Tool{workflow.NewToolWithOptions(a.workflowRunner, workflow.ToolOptions{
-			ParentSessionIDFunc: func() string { return a.sessionID },
+			ParentSessionIDFunc: a.sessionIDFunc(),
 			Enabled:             true,
 			Library:             workflowLibrary,
 		})}

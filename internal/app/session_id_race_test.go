@@ -32,6 +32,10 @@ func TestSessionIDConcurrentReadWrite(t *testing.T) {
 					return
 				}
 			}
+			if f := a.sessionIDFunc(); f() == "" {
+				t.Errorf("sessionIDFunc returned empty")
+				return
+			}
 		}()
 	}
 	// Writers mirror the dispatch paths that switch sessions.

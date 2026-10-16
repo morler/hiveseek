@@ -15,6 +15,14 @@ func (a *App) SessionID() string {
 	defer a.sessionMu.Unlock()
 	return a.sessionID
 }
+
+// sessionIDFunc returns a resolver for the current session id that reads it
+// under sessionMu. Components that resolve the session from their own goroutine
+// (exec boundary, subagents, workflow) must use this instead of capturing
+// a.sessionID, which the dispatch goroutine reassigns on /new, /fork, or resume.
+func (a *App) sessionIDFunc() func() string {
+	return a.SessionID
+}
 func (a *App) SessionsDir() string { return a.sessionsDir }
 
 // setSessionID is the only mutating path to sessionID. All writers (resume,
