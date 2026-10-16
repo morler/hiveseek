@@ -96,6 +96,12 @@ func (a *App) ApplySkillProposal(approval SkillProposalApproval) (string, error)
 	if err != nil {
 		return "", err
 	}
+	// The skill files on disk are the source of truth and every lookup re-reads
+	// them, so the only state that can still carry the old content is the cached
+	// agent built earlier in this session. Drop it: the next turn rebuilds its
+	// toolset and system blocks from disk, and the prompt already handed to a
+	// running turn is left alone (M1-56, M1-57, M1-58).
+	a.resetAgent()
 	if approval.Action == skillsimprover.ActionRestore {
 		return fmt.Sprintf("restored skill %s to its original content (proposal %s)", p.Skill, p.ID), nil
 	}

@@ -2393,6 +2393,44 @@ func TestLoadSkillFiltersDisabledPluginSkills(t *testing.T) {
 	}
 }
 
+func TestLoadSkillReadsTheSkillFileWhenItChanges(t *testing.T) {
+	workspace := t.TempDir()
+	dir := filepath.Join(workspace, ".whale", "skills", "demo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "SKILL.md")
+	write := func(body string) {
+		content := "---\nname: demo\ndescription: Demo skill\n---\n\n# Demo\n\n" + body + "\n"
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("original instructions")
+
+	ts, err := NewToolset(workspace)
+	if err != nil {
+		t.Fatalf("new toolset: %v", err)
+	}
+	res, err := ts.loadSkill(context.Background(), tc("load_skill", map[string]any{"name": "demo"}))
+	if err != nil || res.IsError() {
+		t.Fatalf("load_skill err=%v res=%+v", err, res)
+	}
+	if !strings.Contains(res.ModelText, "original instructions") {
+		t.Fatalf("first load: %s", res.ModelText)
+	}
+
+	// An applied skill proposal rewrites this file under the running session;
+	// the next load must see the new text (M1-59).
+	write("edited instructions")
+	res, err = ts.loadSkill(context.Background(), tc("load_skill", map[string]any{"name": "demo"}))
+	if err != nil || res.IsError() {
+		t.Fatalf("load_skill after edit err=%v res=%+v", err, res)
+	}
+	if !strings.Contains(res.ModelText, "edited instructions") {
+		t.Fatalf("load_skill served stale skill content: %s", res.ModelText)
+	}
+}
 func TestListDirAndShellRun(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "x.txt"), []byte("x"), 0o644); err != nil {

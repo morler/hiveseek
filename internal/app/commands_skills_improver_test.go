@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/usewhale/whale/internal/agent"
 	"github.com/usewhale/whale/internal/plugins"
 	"github.com/usewhale/whale/internal/plugins/skillsimprover"
 )
@@ -223,6 +224,91 @@ func TestSkillProposalApplyAcceptsNoSkipSuffix(t *testing.T) {
 	}
 }
 
+// confirmAction asks the app for the confirmation prompt of one proposal
+// action and returns the approval that prompt hands out.
+func confirmAction(t *testing.T, app *App, id, action string) SkillProposalApproval {
+	t.Helper()
+	res, err := app.ExecuteLocalCommand("/skills-improver " + action + " " + id)
+	if err != nil {
+		t.Fatalf("%s line: %v", action, err)
+	}
+	if !res.Handled || res.LocalResult == nil || res.LocalResult.Kind != skillProposalResultKind {
+		t.Fatalf("%s line should open the confirmation prompt: %+v", action, res)
+	}
+	for _, a := range res.LocalResult.Actions {
+		if a.SkillProposal != nil {
+			return *a.SkillProposal
+		}
+	}
+	t.Fatalf("%s prompt has no approve action: %+v", action, res.LocalResult.Actions)
+	return SkillProposalApproval{}
+}
+
+func TestSkillProposalApplyRefreshesSkillDiscovery(t *testing.T) {
+	app, _, _, p := skillProposalFixture(t, true)
+
+	if _, _, before, err := app.BuildSkillMentionSyntheticPrompt("$demo"); err != nil {
+		t.Fatalf("synthetic prompt: %v", err)
+	} else if !strings.Contains(before, "original body") {
+		t.Fatalf("fixture prompt should carry the original body: %q", before)
+	}
+
+	if _, err := app.ApplySkillProposal(confirmAction(t, app, p.ID, skillsimprover.ActionApply)); err != nil {
+		t.Fatalf("confirmed apply: %v", err)
+	}
+
+	_, _, after, err := app.BuildSkillMentionSyntheticPrompt("$demo")
+	if err != nil {
+		t.Fatalf("synthetic prompt after apply: %v", err)
+	}
+	if !strings.Contains(after, "proposed body") {
+		t.Fatalf("the applied skill must be read back without a restart: %q", after)
+	}
+}
+
+func TestSkillProposalApplyDropsTheCachedAgent(t *testing.T) {
+	app, _, _, p := skillProposalFixture(t, true)
+	// A session-long agent instance was built before the write; it must not
+	// outlive the skill change (M1-57).
+	app.a = &agent.Agent{}
+
+	if _, err := app.ApplySkillProposal(confirmAction(t, app, p.ID, skillsimprover.ActionApply)); err != nil {
+		t.Fatalf("confirmed apply: %v", err)
+	}
+	if app.a != nil {
+		t.Fatal("the cached agent must be dropped so the next turn rebuilds from disk")
+	}
+}
+
+func TestSkillProposalApplyChangesTheNextTurnOnly(t *testing.T) {
+	app, _, _, p := skillProposalFixture(t, true)
+
+	// The prompt already handed to a running turn.
+	_, _, inFlight, err := app.BuildSkillMentionSyntheticPrompt("$demo")
+	if err != nil {
+		t.Fatalf("synthetic prompt: %v", err)
+	}
+	previous := &agent.Agent{}
+	app.a = previous
+
+	if _, err := app.ApplySkillProposal(confirmAction(t, app, p.ID, skillsimprover.ActionApply)); err != nil {
+		t.Fatalf("confirmed apply: %v", err)
+	}
+
+	if !strings.Contains(inFlight, "original body") || strings.Contains(inFlight, "proposed body") {
+		t.Fatalf("a running turn must keep the prompt it was given: %q", inFlight)
+	}
+	if app.a == previous {
+		t.Fatal("the running agent must not be rewritten in place")
+	}
+	_, _, next, err := app.BuildSkillMentionSyntheticPrompt("$demo")
+	if err != nil {
+		t.Fatalf("synthetic prompt for the next turn: %v", err)
+	}
+	if !strings.Contains(next, "proposed body") {
+		t.Fatalf("the next turn must see the new content: %q", next)
+	}
+}
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
