@@ -11,6 +11,9 @@ import (
 	"github.com/usewhale/whale/internal/shellsafe"
 )
 
+// shellTaskStatusRunning is the task status while a shell task is alive.
+const shellTaskStatusRunning = "running"
+
 func (b *Toolset) shellRun(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
 	var in struct {
 		Command      string `json:"command"`
@@ -38,29 +41,19 @@ func (b *Toolset) shellRun(ctx context.Context, call core.ToolCall) (core.ToolRe
 	warnings := b.shellRunWarnings(in.Command)
 	requestedYieldMS, effectiveYieldMS := shellRunYieldMS(in.YieldTimeMS, in.TimeoutMS, b.foregroundShellWait)
 	requestedMaxRuntimeMS, effectiveMaxRuntimeMS := shellRunMaxRuntimeMS(in.MaxRuntimeMS, in.TimeoutMS, in.Background)
+	shellPol := shellPolicyWithForegroundWait(in.Command, requestedYieldMS, b.foregroundShellWait)
+	transport, err := shellRunTransport(mode, shellPol)
+	if err != nil {
+		return marshalToolError(call, "unsupported_transport", err.Error()), nil
+	}
 	if in.Background {
-		shellPol := shellPolicyWithForegroundWait(in.Command, requestedYieldMS, b.foregroundShellWait)
-		transport, err := shellRunTransport(mode, shellPol)
-		if err != nil {
-			return marshalToolError(call, "unsupported_transport", err.Error()), nil
-		}
-		task := b.tasks.create(in.Command, relCWD, transport)
-		task.setExecBoundaryPolicy(b.execBoundaryPolicy())
-		task.setExecBoundaryApproval(b.execBoundarySessionID(), b.execApproval)
-		task.setTimeoutContext(shellTimeoutContext{
+		task := b.startShellTask(workdir, in.Command, relCWD, transport, shellTimeoutContext{
 			Policy:             shellPol,
 			RequestedTimeoutMS: requestedMaxRuntimeMS,
 			EffectiveTimeoutMS: effectiveMaxRuntimeMS,
 			DefaultWaitMS:      b.foregroundShellWait.DefaultMS,
 			BackgroundTask:     true,
 		})
-		cctx, cancel := context.WithTimeout(context.Background(), time.Duration(effectiveMaxRuntimeMS)*time.Millisecond)
-		task.setCancel(cancel)
-		go func() {
-			defer b.tasks.completed(task.ID)
-			defer cancel()
-			runShellBackground(cctx, workdir, in.Command, task)
-		}()
 		if transport == shellTransportPTY {
 			_ = task.waitForStdin(ctx, time.Duration(shellStdinReadyTimeoutMS)*time.Millisecond)
 		}
@@ -74,49 +67,26 @@ func (b *Toolset) shellRun(ctx context.Context, call core.ToolCall) (core.ToolRe
 				"transport": string(transport),
 				"can_write": snap.CanWrite,
 			},
-			"metrics": map[string]any{
-				"requested_yield_time_ms":  requestedYieldMS,
-				"effective_yield_time_ms":  effectiveYieldMS,
-				"requested_max_runtime_ms": requestedMaxRuntimeMS,
-				"effective_max_runtime_ms": effectiveMaxRuntimeMS,
-				"requested_timeout_ms":     requestedMaxRuntimeMS,
-				"effective_timeout_ms":     effectiveMaxRuntimeMS,
-				"timeout_clamped":          requestedMaxRuntimeMS > 0 && requestedMaxRuntimeMS != effectiveMaxRuntimeMS,
-			},
+			"metrics":  shellRunTimeoutMetrics(requestedYieldMS, effectiveYieldMS, requestedMaxRuntimeMS, effectiveMaxRuntimeMS),
 			"warnings": warnings,
 			"summary":  "background shell task started",
 		})
 	}
 
-	shellPol := shellPolicyWithForegroundWait(in.Command, requestedYieldMS, b.foregroundShellWait)
-	transport, err := shellRunTransport(mode, shellPol)
-	if err != nil {
-		return marshalToolError(call, "unsupported_transport", err.Error()), nil
-	}
-	task := b.tasks.create(in.Command, relCWD, transport)
-	task.setExecBoundaryPolicy(b.execBoundaryPolicy())
-	task.setExecBoundaryApproval(b.execBoundarySessionID(), b.execApproval)
-	task.setTimeoutContext(shellTimeoutContext{
+	task := b.startShellTask(workdir, in.Command, relCWD, transport, shellTimeoutContext{
 		Policy:             shellPol,
 		RequestedTimeoutMS: requestedMaxRuntimeMS,
 		EffectiveTimeoutMS: effectiveMaxRuntimeMS,
 		DefaultWaitMS:      b.foregroundShellWait.DefaultMS,
 		BackgroundTask:     false,
 	})
-	cctx, cancel := context.WithTimeout(context.Background(), time.Duration(effectiveMaxRuntimeMS)*time.Millisecond)
-	task.setCancel(cancel)
-	go func() {
-		defer b.tasks.completed(task.ID)
-		defer cancel()
-		runShellBackground(cctx, workdir, in.Command, task)
-	}()
 
 	timer := time.NewTimer(time.Duration(effectiveYieldMS) * time.Millisecond)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		snap := task.snapshot()
-		if snap.Status != "running" {
+		if snap.Status != shellTaskStatusRunning {
 			b.tasks.release(task.ID)
 			return shellRunForegroundFinalResult(ctx, call, snap, requestedMaxRuntimeMS, effectiveMaxRuntimeMS, warnings)
 		}
@@ -126,13 +96,30 @@ func (b *Toolset) shellRun(ctx context.Context, call core.ToolCall) (core.ToolRe
 		b.tasks.release(task.ID)
 		return shellRunForegroundFinalResult(ctx, call, snap, requestedMaxRuntimeMS, effectiveMaxRuntimeMS, warnings)
 	case <-timer.C:
-		if snap := task.snapshot(); snap.Status != "running" {
+		if snap := task.snapshot(); snap.Status != shellTaskStatusRunning {
 			b.tasks.release(task.ID)
 			return shellRunForegroundFinalResult(ctx, call, snap, requestedMaxRuntimeMS, effectiveMaxRuntimeMS, warnings)
 		}
 		snap := task.snapshot()
 		return marshalToolResult(call, shellRunBackgroundedResult(snap, requestedYieldMS, effectiveYieldMS, requestedMaxRuntimeMS, effectiveMaxRuntimeMS, warnings, shellYieldTimeoutDiagnosis(shellPol, snap)))
 	}
+}
+
+// startShellTask registers a shell task and starts its runner goroutine; the
+// timeout context decides whether the task counts as foreground or background.
+func (b *Toolset) startShellTask(workdir, command, relCWD string, transport shellTransportKind, timeout shellTimeoutContext) *shellTask {
+	task := b.tasks.create(command, relCWD, transport)
+	task.setExecBoundaryPolicy(b.execBoundaryPolicy())
+	task.setExecBoundaryApproval(b.execBoundarySessionID(), b.execApproval)
+	task.setTimeoutContext(timeout)
+	cctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout.EffectiveTimeoutMS)*time.Millisecond)
+	task.setCancel(cancel)
+	go func() {
+		defer b.tasks.completed(task.ID)
+		defer cancel()
+		runShellBackground(cctx, workdir, command, task)
+	}()
+	return task
 }
 
 func shellRunYieldMS(yieldTimeMS, legacyTimeoutMS int, waitCfg foregroundShellWaitConfig) (int, int) {
@@ -162,9 +149,6 @@ func shellRunMaxRuntimeMS(maxRuntimeMS, legacyTimeoutMS int, legacyTimeoutIsRunt
 
 func shellYieldInterruptedDiagnosis(policy shellContinuationPolicy) shellDiagnosis {
 	diagnosis := shellDiagnosisForReason(policy.Reason)
-	if diagnosis.Reason == "" {
-		diagnosis.Reason = "unknown_long_running"
-	}
 	diagnosis.Reason = "yield_interrupted"
 	diagnosis.Hint = "The tool call was interrupted, but the shell process is still running. Continue with shell_wait using the existing task_id."
 	diagnosis.SuggestedNextAction = "shell_wait"
@@ -422,35 +406,18 @@ func shellArchiveMetadata(path string) map[string]any {
 	}
 }
 
-func shellRunForegroundTimeoutResult(call core.ToolCall, snap shellTaskSnapshot, requestedTimeoutMS int, effectiveTimeoutMS int, warnings []string) (core.ToolResult, error) {
-	stdout, stdoutTr := truncateTextSmart(snap.Stdout, maxToolTextChars)
-	stderr, stderrTr := truncateTextSmart(snap.Stderr, maxToolTextChars)
-	result := shellRunResult(shellRunResultInput{
-		Status:             "timeout",
-		SummaryParts:       []string{"command timed out"},
-		Command:            snap.Command,
-		CWD:                snap.CWD,
-		Stdout:             stdout,
-		Stderr:             stderr,
-		StdoutRaw:          snap.Stdout,
-		StderrRaw:          snap.Stderr,
-		StdoutTruncation:   stdoutTr,
-		StderrTruncation:   stderrTr,
-		DurationMS:         shellTaskDurationMS(snap),
-		ExitCode:           nil,
-		TimedOut:           true,
-		RequestedTimeoutMS: requestedTimeoutMS,
-		EffectiveTimeoutMS: effectiveTimeoutMS,
-		Diagnosis:          snap.Diagnosis,
-		Warnings:           warnings,
-		Transport:          snap.Transport,
-		CanWrite:           snap.CanWrite,
-	})
-	content, marshalErr := core.MarshalToolEnvelope(core.ToolEnvelope{Success: false, Data: result, Message: "command timed out", Code: "timeout"})
-	if marshalErr != nil {
-		return marshalToolError(call, "timeout", "command timed out"), nil
+// shellRunTimeoutMetrics builds the yield and runtime metrics shared by the
+// background-start and auto-background responses.
+func shellRunTimeoutMetrics(requestedYieldMS, effectiveYieldMS, requestedMaxRuntimeMS, effectiveMaxRuntimeMS int) map[string]any {
+	return map[string]any{
+		"requested_yield_time_ms":  requestedYieldMS,
+		"effective_yield_time_ms":  effectiveYieldMS,
+		"requested_max_runtime_ms": requestedMaxRuntimeMS,
+		"effective_max_runtime_ms": effectiveMaxRuntimeMS,
+		"requested_timeout_ms":     requestedMaxRuntimeMS,
+		"effective_timeout_ms":     effectiveMaxRuntimeMS,
+		"timeout_clamped":          requestedMaxRuntimeMS > 0 && requestedMaxRuntimeMS != effectiveMaxRuntimeMS,
 	}
-	return core.ToolResult{ToolCallID: call.ID, Name: call.Name, ModelText: content, Outcome: core.OutcomeTimeout, Code: "timeout"}, nil
 }
 
 func shellRunBackgroundedResult(snap shellTaskSnapshot, requestedYieldMS int, effectiveYieldMS int, requestedMaxRuntimeMS int, effectiveMaxRuntimeMS int, warnings []string, diagnosis shellDiagnosis) map[string]any {
@@ -458,19 +425,12 @@ func shellRunBackgroundedResult(snap shellTaskSnapshot, requestedYieldMS int, ef
 	if len(warnings) > 0 {
 		summaryParts = append(summaryParts, "warning: "+strings.Join(warnings, "; "))
 	}
+	metrics := shellRunTimeoutMetrics(requestedYieldMS, effectiveYieldMS, requestedMaxRuntimeMS, effectiveMaxRuntimeMS)
+	metrics["duration_ms"] = shellTaskDurationMS(snap)
+	metrics["auto_backgrounded"] = true
 	result := map[string]any{
-		"status": "running",
-		"metrics": map[string]any{
-			"duration_ms":              shellTaskDurationMS(snap),
-			"requested_yield_time_ms":  requestedYieldMS,
-			"effective_yield_time_ms":  effectiveYieldMS,
-			"requested_max_runtime_ms": requestedMaxRuntimeMS,
-			"effective_max_runtime_ms": effectiveMaxRuntimeMS,
-			"requested_timeout_ms":     requestedMaxRuntimeMS,
-			"effective_timeout_ms":     effectiveMaxRuntimeMS,
-			"timeout_clamped":          requestedMaxRuntimeMS > 0 && requestedMaxRuntimeMS != effectiveMaxRuntimeMS,
-			"auto_backgrounded":        true,
-		},
+		"status":  "running",
+		"metrics": metrics,
 		"payload": map[string]any{
 			"task_id":    snap.ID,
 			"command":    snap.Command,
@@ -575,6 +535,22 @@ func dedupeStrings(values []string) []string {
 	return out
 }
 
+// resolveShellTask resolves the task_id argument shared by shell_wait,
+// write_stdin and shell_cancel; a non-nil failure is the tool error to return.
+func (b *Toolset) resolveShellTask(call core.ToolCall, rawID string) (*shellTask, *core.ToolResult) {
+	taskID := strings.TrimSpace(rawID)
+	if taskID == "" {
+		failure := marshalToolError(call, "invalid_args", "task_id is required")
+		return nil, &failure
+	}
+	task, ok := b.tasks.get(taskID)
+	if !ok {
+		failure := marshalToolError(call, "not_found", "task not found")
+		return nil, &failure
+	}
+	return task, nil
+}
+
 func (b *Toolset) shellWait(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
 	var in struct {
 		TaskID    string `json:"task_id"`
@@ -583,12 +559,9 @@ func (b *Toolset) shellWait(ctx context.Context, call core.ToolCall) (core.ToolR
 	if err := decodeInput(call.Input, &in); err != nil {
 		return marshalToolError(call, "invalid_args", err.Error()), nil
 	}
-	if strings.TrimSpace(in.TaskID) == "" {
-		return marshalToolError(call, "invalid_args", "task_id is required"), nil
-	}
-	task, ok := b.tasks.get(strings.TrimSpace(in.TaskID))
-	if !ok {
-		return marshalToolError(call, "not_found", "task not found"), nil
+	task, failure := b.resolveShellTask(call, in.TaskID)
+	if failure != nil {
+		return *failure, nil
 	}
 	return b.shellWaitForTask(ctx, call, task, in.TimeoutMS, "task still running", nil)
 }
@@ -603,13 +576,9 @@ func (b *Toolset) writeStdin(ctx context.Context, call core.ToolCall) (core.Tool
 	if err := decodeInput(call.Input, &in); err != nil {
 		return marshalToolError(call, "invalid_args", err.Error()), nil
 	}
-	taskID := strings.TrimSpace(in.TaskID)
-	if taskID == "" {
-		return marshalToolError(call, "invalid_args", "task_id is required"), nil
-	}
-	task, ok := b.tasks.get(taskID)
-	if !ok {
-		return marshalToolError(call, "not_found", "task not found"), nil
+	task, failure := b.resolveShellTask(call, in.TaskID)
+	if failure != nil {
+		return *failure, nil
 	}
 	input, err := shellStdinInput(in.Chars, in.Keys)
 	if err != nil {
@@ -663,6 +632,17 @@ func shellStdinInput(chars string, keys []string) (string, error) {
 	return b.String(), nil
 }
 
+// shellMergeExtraMetrics folds call-specific counters into a running-task result.
+func shellMergeExtraMetrics(result map[string]any, extraMetrics map[string]any) {
+	if extraMetrics == nil {
+		return
+	}
+	metrics := result["metrics"].(map[string]any)
+	for k, v := range extraMetrics {
+		metrics[k] = v
+	}
+}
+
 func (b *Toolset) shellWaitForTask(ctx context.Context, call core.ToolCall, task *shellTask, timeoutMS int, runningSummary string, extraMetrics map[string]any) (core.ToolResult, error) {
 	deadline := time.Duration(defaultShellWaitTimeoutMS) * time.Millisecond
 	if timeoutMS > 0 {
@@ -678,7 +658,7 @@ func (b *Toolset) shellWaitForTask(ctx context.Context, call core.ToolCall, task
 
 	for {
 		snap := task.snapshot()
-		if snap.Status != "running" {
+		if snap.Status != shellTaskStatusRunning {
 			return b.shellWaitFinalResult(ctx, call, snap, extraMetrics)
 		}
 		select {
@@ -686,7 +666,7 @@ func (b *Toolset) shellWaitForTask(ctx context.Context, call core.ToolCall, task
 			return marshalToolError(call, "cancelled", ctx.Err().Error()), nil
 		case <-timer.C:
 			snap = task.snapshot()
-			if snap.Status != "running" {
+			if snap.Status != shellTaskStatusRunning {
 				return b.shellWaitFinalResult(ctx, call, snap, extraMetrics)
 			}
 			result := map[string]any{
@@ -708,12 +688,7 @@ func (b *Toolset) shellWaitForTask(ctx context.Context, call core.ToolCall, task
 				},
 				"summary": runningSummary,
 			}
-			if extraMetrics != nil {
-				metrics := result["metrics"].(map[string]any)
-				for k, v := range extraMetrics {
-					metrics[k] = v
-				}
-			}
+			shellMergeExtraMetrics(result, extraMetrics)
 			if diagnosis := snap.Diagnosis.asMap(); diagnosis != nil {
 				result["diagnosis"] = diagnosis
 			}
@@ -750,12 +725,7 @@ func (b *Toolset) shellWaitFinalResult(ctx context.Context, call core.ToolCall, 
 			"duration_ms":       shellTaskDurationMS(snap),
 		},
 	}
-	if extraMetrics != nil {
-		metrics := result["metrics"].(map[string]any)
-		for k, v := range extraMetrics {
-			metrics[k] = v
-		}
-	}
+	shellMergeExtraMetrics(result, extraMetrics)
 	if diagnosis := snap.Diagnosis.asMap(); diagnosis != nil {
 		result["diagnosis"] = diagnosis
 	}
@@ -769,13 +739,9 @@ func (b *Toolset) shellCancel(ctx context.Context, call core.ToolCall) (core.Too
 	if err := decodeInput(call.Input, &in); err != nil {
 		return marshalToolError(call, "invalid_args", err.Error()), nil
 	}
-	taskID := strings.TrimSpace(in.TaskID)
-	if taskID == "" {
-		return marshalToolError(call, "invalid_args", "task_id is required"), nil
-	}
-	task, ok := b.tasks.get(taskID)
-	if !ok {
-		return marshalToolError(call, "not_found", "task not found"), nil
+	task, failure := b.resolveShellTask(call, in.TaskID)
+	if failure != nil {
+		return *failure, nil
 	}
 	task.cancelRun()
 	select {
@@ -791,7 +757,7 @@ func (b *Toolset) shellCancel(ctx context.Context, call core.ToolCall) (core.Too
 			"task_id":    snap.ID,
 			"command":    snap.Command,
 			"cwd":        snap.CWD,
-			"done":       snap.Status != "running",
+			"done":       snap.Status != shellTaskStatusRunning,
 			"started_at": snap.StartedAt,
 			"ended_at":   snap.FinishedAt,
 		},
