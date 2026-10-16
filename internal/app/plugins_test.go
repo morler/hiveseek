@@ -651,3 +651,37 @@ func TestSkillsImproverListedOnceEnabled(t *testing.T) {
 		t.Fatal("enabled skills-improver should register save_skill_proposal")
 	}
 }
+
+func TestSkillsImproverUsesSharedPluginEnableConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.DataDir = t.TempDir()
+	workspace := t.TempDir()
+
+	// The /plugins toggle path every plugin shares must be the only entry
+	// point: same [plugins.<id>] table, no bespoke switch (M1-39).
+	loaded, _, err := SetPluginEnabledConfig(cfg, workspace, "skills-improver", true)
+	if err != nil {
+		t.Fatalf("SetPluginEnabledConfig: %v", err)
+	}
+	if cfgEntry, ok := loaded.Plugins["skills-improver"]; !ok || cfgEntry.Enabled == nil || !*cfgEntry.Enabled {
+		t.Fatalf("expected runtime config to enable skills-improver, got %+v", loaded.Plugins)
+	}
+	file, _, err := LoadConfigFile(ProjectLocalConfigPath(workspace))
+	if err != nil {
+		t.Fatalf("LoadConfigFile: %v", err)
+	}
+	if entry, ok := file.Plugins["skills-improver"]; !ok || entry.Enabled == nil || !*entry.Enabled {
+		t.Fatalf("expected shared [plugins.skills-improver] table, got %+v", file.Plugins)
+	}
+
+	mgr := plugins.NewManager(plugins.Context{DataDir: loaded.DataDir, WorkspaceRoot: workspace}, loaded.Plugins)
+	found := false
+	for _, st := range mgr.Statuses() {
+		if st.Manifest.ID == "skills-improver" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("shared enable config should list skills-improver: %+v", mgr.Statuses())
+	}
+}
