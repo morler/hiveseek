@@ -68,6 +68,36 @@ A: 安装后的缓存文件在 `~/.whale/plugins/cache/local/<id>/<version>/`。
 
 ---
 
+### 内置插件：skills-improver
+
+`skills-improver` 是内置插件，**默认禁用**。启用后它提供技能改进闭环：从会话的失败与反馈里收集证据，生成对**项目内既有技能**的改进提案，再由你确认后写回。
+
+启用方式与其它插件有一处不同：它只在**用户级配置**（`~/.whale/config.toml`）里启用才生效，项目级 `.whale/config.toml` 与 `.whale/config.local.toml` 只能收紧（写 `enabled = false`）。所以 `whale plugin enable skills-improver` 不会打开它，请在用户级配置里手动添加：
+
+```toml
+[plugins.skills-improver]
+enabled = true
+```
+
+启用后的斜杠命令：
+
+| 命令 | 作用 |
+|------|------|
+| `/skills-improver status` | 启用状态与证据计数 |
+| `/skills-improver proposals` | 列出提案 ID 与状态 |
+| `/skills-improver show <id>` | 显示提案与原文的 diff |
+| `/skills-improver apply <id>` | 应用提案（先弹确认，确认后才写文件） |
+| `/skills-improver restore <id>` | 还原技能原文（同样先确认） |
+
+边界：
+
+- 只改项目 `.whale/skills` 与 `.agents/skills` 下**已存在**的技能文件；不新建技能，不写 home 技能或插件技能
+- 应用前核对目标路径与原文 SHA-256，并先把原文备份到私有数据目录
+- 没有确认就不写文件；`apply`／`restore` 不作为 agent 工具注册，`--dangerously-skip-permissions` 也不跳过这个确认
+- 子智能体、workflow agent 与 ACP 连接不继承这个能力
+- 未启用时命令、技能、工具与 hook 都不注册，也不写证据
+
+---
 ## 开发者指南
 
 ### 一个插件就是一个目录

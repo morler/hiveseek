@@ -175,3 +175,21 @@ The boundary is deliberate: this protects against accidents and against two
 Whale processes racing on the same file. It does **not** defend against another
 process running as the same user, which can read and write your files directly.
 Nothing here should be treated as a sandbox.
+
+## Enabling Skill Improvement Proposals
+
+The `skills-improver` plugin is built in and off by default. Enable it in the
+**user-level config** (`~/.whale/config.toml`); the project-level files can only
+turn it off:
+
+```toml
+[plugins.skills-improver]
+enabled = true
+```
+
+It then adds `/skills-improver status`, `/skills-improver proposals`,
+`/skills-improver show <id>`, `/skills-improver apply <id>` and
+`/skills-improver restore <id>`. `apply` and `restore` first print a
+confirmation prompt that binds the session, the target path and both SHA-256
+hashes; nothing is written until you answer it. The agent has no tool that
+applies or restores a proposal, and no flag skips the prompt.

@@ -68,6 +68,36 @@ A: Installed plugin cache is at `~/.whale/plugins/cache/local/<id>/<version>/`.
 
 ---
 
+### Built-in plugin: skills-improver
+
+`skills-improver` is a built-in plugin, **off by default**. Once enabled it closes the loop on skill improvements: it collects evidence from session failures and feedback, drafts a proposal against an **existing project skill**, and writes it back only after you confirm.
+
+Enabling works differently from other plugins: it turns on only when enabled in the **user-level config** (`~/.whale/config.toml`). The project-level files `.whale/config.toml` and `.whale/config.local.toml` can only tighten it (`enabled = false`). So `whale plugin enable skills-improver` does not open it — add it to the user-level config by hand:
+
+```toml
+[plugins.skills-improver]
+enabled = true
+```
+
+Commands once enabled:
+
+| Command | What it does |
+|---------|--------------|
+| `/skills-improver status` | enabled state and evidence count |
+| `/skills-improver proposals` | list proposal IDs and states |
+| `/skills-improver show <id>` | show the diff against the original |
+| `/skills-improver apply <id>` | apply the proposal (confirm first; nothing is written before you answer) |
+| `/skills-improver restore <id>` | put the original content back (same confirmation) |
+
+Limits:
+
+- Only **existing** skill files under the project's `.whale/skills` and `.agents/skills` are touched; it never creates a skill, and never writes a home skill or a plugin skill
+- Before writing it checks the target path and the original SHA-256, and backs the original up into the private data directory
+- Nothing is written without the confirmation; `apply` and `restore` are not registered as agent tools, and `--dangerously-skip-permissions` does not skip the prompt
+- Subagents, workflow agents and ACP connections do not inherit the capability
+- While disabled, no command, skill, tool or hook is registered and no evidence is written
+
+---
 ## Developer Guide
 
 ### A Plugin is a Directory
